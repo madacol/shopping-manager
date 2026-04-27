@@ -2,6 +2,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -31,6 +32,24 @@ function runCli(args) {
   } finally {
     console.log = originalLog;
   }
+}
+
+/**
+ * @param {string} dbPath
+ * @param {string[]} args
+ * @returns {any}
+ */
+function runSkillCli(dbPath, args) {
+  return JSON.parse(
+    execFileSync(process.execPath, ['skills/shopping-list-chat/scripts/shopping-list.mjs', ...args], {
+      cwd: path.resolve('.'),
+      env: {
+        ...process.env,
+        SHOPPING_LIST_DB: dbPath
+      },
+      encoding: 'utf8'
+    })
+  );
 }
 
 /**
@@ -488,5 +507,102 @@ test('http api serves snapshots and mutations with version-aware polling', async
       });
     });
     fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('http api exposes unified per-order media for chat-created entries', async () => {
+  const dbPath = createDbPath();
+  const imagePath = path.join(os.tmpdir(), `shopping-image-${Date.now()}.jpg`);
+  const audioPath = path.join(os.tmpdir(), `shopping-audio-${Date.now()}.ogg`);
+
+  fs.writeFileSync(imagePath, 'fake-image');
+  fs.writeFileSync(audioPath, 'fake-audio');
+
+  runSkillCli(dbPath, [
+    'add-item',
+    'cereal',
+    '1',
+    'supermercado',
+    '--by',
+    'Rosalba',
+    '--image',
+    imagePath,
+    '--note',
+    'el de la foto'
+  ]);
+  runSkillCli(dbPath, [
+    'add-item',
+    'cereal',
+    '1',
+    'supermercado',
+    '--by',
+    'Juan',
+    '--image',
+    audioPath,
+    '--note',
+    'el del audio'
+  ]);
+
+  const { server, baseUrl } = await startServer(dbPath);
+
+  try {
+    const snapshotResponse = await fetch(`${baseUrl}/api/lists/supermercado`);
+    const snapshot = await readResponseJson(snapshotResponse);
+    const cereal = snapshot.items.find(
+      /** @param {{ name: string, qty: number, orders?: any[] }} item */
+      (item) => item.name === 'cereal'
+    );
+
+    assert.equal(cereal?.qty, 2);
+    assert.equal(cereal?.orders.length, 2);
+    assert.deepEqual(
+      cereal?.orders.map(
+        /** @param {{ ordered_by: string, qty: number, media: Array<{ kind: string, url: string }> }} order */
+        (order) => ({
+          orderedBy: order.ordered_by,
+          qty: order.qty,
+          kinds: order.media.map((media) => media.kind)
+        })
+      ),
+      [
+        { orderedBy: 'Juan', qty: 1, kinds: ['audio'] },
+        { orderedBy: 'Rosalba', qty: 1, kinds: ['image'] }
+      ]
+    );
+
+    const imageUrl = cereal?.orders.find(
+      /** @param {{ ordered_by: string, media: Array<{ url: string }> }} order */
+      (order) => order.ordered_by === 'Rosalba'
+    )?.media[0]?.url;
+    const audioUrl = cereal?.orders.find(
+      /** @param {{ ordered_by: string, media: Array<{ url: string }> }} order */
+      (order) => order.ordered_by === 'Juan'
+    )?.media[0]?.url;
+
+    assert.equal(typeof imageUrl, 'string');
+    assert.equal(typeof audioUrl, 'string');
+
+    const imageResponse = await fetch(`${baseUrl}${imageUrl}`);
+    assert.equal(imageResponse.status, 200);
+    assert.equal(imageResponse.headers.get('content-type'), 'image/jpeg');
+    assert.equal(await imageResponse.text(), 'fake-image');
+
+    const audioResponse = await fetch(`${baseUrl}${audioUrl}`);
+    assert.equal(audioResponse.status, 200);
+    assert.equal(audioResponse.headers.get('content-type'), 'audio/ogg');
+    assert.equal(await audioResponse.text(), 'fake-audio');
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(undefined);
+      });
+    });
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(imagePath, { force: true });
+    fs.rmSync(audioPath, { force: true });
   }
 });

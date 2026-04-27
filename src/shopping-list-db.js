@@ -1,5 +1,6 @@
 // @ts-check
 
+import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 /**
@@ -23,15 +24,59 @@ import { DatabaseSync } from 'node:sqlite';
  */
 
 /**
+ * @typedef {'image' | 'audio' | 'video'} MediaKind
+ */
+
+/**
+ * @typedef {object} MediaRow
+ * @property {number} id
+ * @property {number} item_order_id
+ * @property {MediaKind} kind
+ * @property {string} path
+ * @property {string | null} mime_type
+ * @property {string} created_at
+ */
+
+/**
+ * @typedef {object} OrderRow
+ * @property {number} id
+ * @property {number} item_id
+ * @property {string} ordered_by
+ * @property {number} qty
+ * @property {string | null} note
+ * @property {string} created_at
+ * @property {string} updated_at
+ */
+
+/**
  * @typedef {object} ItemRow
  * @property {number} id
  * @property {number} list_id
  * @property {string} canonical_name
- * @property {number} qty
  * @property {string} status
  * @property {string | null} note
  * @property {string} created_at
  * @property {string} updated_at
+ */
+
+/**
+ * @typedef {object} OrderMediaView
+ * @property {number} id
+ * @property {MediaKind} kind
+ * @property {string} path
+ * @property {string | null} mime_type
+ * @property {string} created_at
+ */
+
+/**
+ * @typedef {object} OrderView
+ * @property {number} id
+ * @property {string} ordered_by
+ * @property {number} qty
+ * @property {string | null} note
+ * @property {string} created_at
+ * @property {string} updated_at
+ * @property {OrderMediaView[]} media
  */
 
 /**
@@ -42,6 +87,7 @@ import { DatabaseSync } from 'node:sqlite';
  * @property {string | null} note
  * @property {string} created_at
  * @property {string} updated_at
+ * @property {OrderView[]} orders
  */
 
 /**
@@ -71,20 +117,31 @@ import { DatabaseSync } from 'node:sqlite';
  * @property {StatementSync} getListByName
  * @property {StatementSync} getAllLists
  * @property {StatementSync} resolveAlias
- * @property {StatementSync} upsertItem
+ * @property {StatementSync} ensureItem
  * @property {StatementSync} getItemByCanonicalName
- * @property {StatementSync} setItemNote
- * @property {StatementSync} updateItemById
+ * @property {StatementSync} getItemById
+ * @property {StatementSync} renameItem
  * @property {StatementSync} insertEvent
  * @property {StatementSync} markBought
  * @property {StatementSync} markPending
  * @property {StatementSync} markRemoved
- * @property {StatementSync} updateItemQtyAndStatus
+ * @property {StatementSync} touchItem
  * @property {StatementSync} showAllItems
  * @property {StatementSync} getListVersion
  * @property {StatementSync} showList
  * @property {StatementSync} upsertAlias
  * @property {StatementSync} showEvents
+ * @property {StatementSync} upsertOrder
+ * @property {StatementSync} setOrderQty
+ * @property {StatementSync} setOrderNote
+ * @property {StatementSync} deleteOrder
+ * @property {StatementSync} getOrdersForItem
+ * @property {StatementSync} insertOrderMedia
+ * @property {StatementSync} getMediaForOrder
+ * @property {StatementSync} getMediaById
+ * @property {StatementSync} legacyOrderMediaRows
+ * @property {StatementSync} existingMigratedMedia
+ * @property {StatementSync} backfillOrders
  */
 
 /**
@@ -102,6 +159,7 @@ import { DatabaseSync } from 'node:sqlite';
  * @property {number} qty
  * @property {string} status
  * @property {string | null} note
+ * @property {OrderView[]} orders
  */
 
 /**
@@ -140,6 +198,8 @@ function assertDefined(value, message) {
   return value;
 }
 
+const UNKNOWN_ORDERED_BY = 'unknown';
+
 export class ShoppingListDb {
   /** @type {DatabaseSync} */
   db;
@@ -156,8 +216,12 @@ export class ShoppingListDb {
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.#initSchema();
     this.#ensureItemColumn('note', 'TEXT');
-    this.#backfillItemNotesFromOrders();
+    this.#ensureOrderColumn('note', 'TEXT');
+    this.#ensureOrderColumn('image_ref', 'TEXT');
+    this.#ensureMediaColumn('mime_type', 'TEXT');
     this.statements = this.#prepareStatements();
+    this.#backfillOrders();
+    this.#migrateLegacyOrderMedia();
   }
 
   /**
@@ -237,14 +301,19 @@ export class ShoppingListDb {
       const list = this.createList(normalizedListName);
       const canonicalName = this.resolveCanonicalName(rawItem).toLowerCase();
 
-      this.statements.upsertItem.run(list.id, canonicalName, parsedQty, normalizedNote);
+      this.statements.ensureItem.run(list.id, canonicalName);
 
       const item = /** @type {ItemRow} */ (
         assertDefined(
           this.statements.getItemByCanonicalName.get(list.id, canonicalName),
-          `Item not found after upsert: ${canonicalName}`
+          `Item not found after ensure: ${canonicalName}`
         )
       );
+
+      this.statements.upsertOrder.run(item.id, UNKNOWN_ORDERED_BY, parsedQty, normalizedNote);
+      this.statements.touchItem.run(item.id);
+
+      const updated = this.#getItemView(item.id);
 
       this.statements.insertEvent.run(
         list.id,
@@ -254,18 +323,12 @@ export class ShoppingListDb {
           rawItem: this.#normalizeItemName(rawItem),
           canonicalName,
           qty: parsedQty,
+          orderedBy: UNKNOWN_ORDERED_BY,
           note: normalizedNote
         })
       );
 
-      return {
-        ok: true,
-        list: list.name,
-        item: canonicalName,
-        qty: item.qty,
-        status: item.status,
-        note: item.note
-      };
+      return this.#toMutationResult(list.name, updated);
     });
   }
 
@@ -290,14 +353,17 @@ export class ShoppingListDb {
         throw new Error(`Item not found: ${canonicalName}`);
       }
 
-      this.statements.setItemNote.run(normalizedNote, item.id);
+      const orders = this.#getOrdersForItem(item.id);
+      const editableOrder = this.#getEditableOrder(orders, canonicalName, 'update note');
 
-      const updatedItem = /** @type {ItemRow} */ (
-        assertDefined(
-          this.statements.getItemByCanonicalName.get(list.id, canonicalName),
-          `Item not found after set_note: ${canonicalName}`
-        )
-      );
+      if (normalizedNote === null && orders.length === 1) {
+        this.statements.setOrderNote.run(null, editableOrder.id);
+      } else {
+        this.statements.setOrderNote.run(normalizedNote, editableOrder.id);
+      }
+
+      this.statements.touchItem.run(item.id);
+      const updated = this.#getItemView(item.id);
 
       this.statements.insertEvent.run(
         list.id,
@@ -306,18 +372,12 @@ export class ShoppingListDb {
         JSON.stringify({
           rawItem: this.#normalizeItemName(rawItem),
           canonicalName,
+          orderedBy: editableOrder.ordered_by,
           note: normalizedNote
         })
       );
 
-      return {
-        ok: true,
-        list: list.name,
-        item: canonicalName,
-        qty: updatedItem.qty,
-        status: updatedItem.status,
-        note: updatedItem.note
-      };
+      return this.#toMutationResult(list.name, updated);
     });
   }
 
@@ -327,43 +387,7 @@ export class ShoppingListDb {
    * @returns {ItemMutationResult}
    */
   markBought(listName, rawItem) {
-    const normalizedListName = this.#normalizeListName(listName);
-
-    return this.#transaction(() => {
-      const list = this.createList(normalizedListName);
-      const canonicalName = this.resolveCanonicalName(rawItem).toLowerCase();
-      const result = /** @type {SqliteRunResult} */ (this.statements.markBought.run(list.id, canonicalName));
-
-      if (result.changes === 0) {
-        throw new Error(`Item not found: ${canonicalName}`);
-      }
-
-      const item = /** @type {ItemRow} */ (
-        assertDefined(
-          this.statements.getItemByCanonicalName.get(list.id, canonicalName),
-          `Item not found after mark_bought: ${canonicalName}`
-        )
-      );
-
-      this.statements.insertEvent.run(
-        list.id,
-        item.id,
-        'mark_bought',
-        JSON.stringify({
-          rawItem: this.#normalizeItemName(rawItem),
-          canonicalName
-        })
-      );
-
-      return {
-        ok: true,
-        list: list.name,
-        item: canonicalName,
-        qty: item.qty,
-        status: item.status,
-        note: item.note
-      };
-    });
+    return this.#setItemStatus(listName, rawItem, 'bought', 'mark_bought');
   }
 
   /**
@@ -372,43 +396,7 @@ export class ShoppingListDb {
    * @returns {ItemMutationResult}
    */
   markPending(listName, rawItem) {
-    const normalizedListName = this.#normalizeListName(listName);
-
-    return this.#transaction(() => {
-      const list = this.createList(normalizedListName);
-      const canonicalName = this.resolveCanonicalName(rawItem).toLowerCase();
-      const result = /** @type {SqliteRunResult} */ (this.statements.markPending.run(list.id, canonicalName));
-
-      if (result.changes === 0) {
-        throw new Error(`Item not found: ${canonicalName}`);
-      }
-
-      const item = /** @type {ItemRow} */ (
-        assertDefined(
-          this.statements.getItemByCanonicalName.get(list.id, canonicalName),
-          `Item not found after mark_pending: ${canonicalName}`
-        )
-      );
-
-      this.statements.insertEvent.run(
-        list.id,
-        item.id,
-        'mark_pending',
-        JSON.stringify({
-          rawItem: this.#normalizeItemName(rawItem),
-          canonicalName
-        })
-      );
-
-      return {
-        ok: true,
-        list: list.name,
-        item: canonicalName,
-        qty: item.qty,
-        status: item.status,
-        note: item.note
-      };
-    });
+    return this.#setItemStatus(listName, rawItem, 'pending', 'mark_pending');
   }
 
   /**
@@ -431,21 +419,46 @@ export class ShoppingListDb {
         throw new Error(`Item not found: ${canonicalName}`);
       }
 
-      const parsedQty = qty === undefined ? item.qty : Number(qty);
+      const orders = this.#getOrdersForItem(item.id);
+      const currentQty = sumOrderQty(orders);
+      const parsedQty = qty === undefined ? currentQty : Number(qty);
 
       if (!Number.isFinite(parsedQty) || parsedQty <= 0) {
         throw new Error('Quantity must be a positive number');
       }
 
-      const qtyRemoved = Math.min(item.qty, parsedQty);
-      const remainingQty = item.qty - qtyRemoved;
-      const nextStatus = remainingQty === 0 ? 'removed' : item.status;
+      let qtyRemoved = 0;
+      let remainingQty = currentQty;
 
-      if (remainingQty === 0) {
-        this.statements.markRemoved.run(list.id, canonicalName);
+      if (parsedQty >= currentQty) {
+        this.statements.markRemoved.run(item.id);
+        qtyRemoved = currentQty;
+        remainingQty = currentQty;
       } else {
-        this.statements.updateItemQtyAndStatus.run(remainingQty, nextStatus, item.id);
+        let leftToRemove = parsedQty;
+        for (const order of sortOrdersForRemoval(orders)) {
+          if (leftToRemove <= 0) {
+            break;
+          }
+
+          const removeFromOrder = Math.min(order.qty, leftToRemove);
+          const nextQty = order.qty - removeFromOrder;
+
+          if (nextQty <= 0) {
+            this.statements.deleteOrder.run(order.id);
+          } else {
+            this.statements.setOrderQty.run(nextQty, order.id);
+          }
+
+          leftToRemove -= removeFromOrder;
+          qtyRemoved += removeFromOrder;
+        }
+
+        remainingQty = currentQty - qtyRemoved;
+        this.statements.touchItem.run(item.id);
       }
+
+      const updated = this.#getItemView(item.id);
 
       this.statements.insertEvent.run(
         list.id,
@@ -460,14 +473,7 @@ export class ShoppingListDb {
         })
       );
 
-      return {
-        ok: true,
-        list: list.name,
-        item: canonicalName,
-        qty: remainingQty,
-        status: nextStatus,
-        note: item.note
-      };
+      return this.#toMutationResult(list.name, updated);
     });
   }
 
@@ -494,30 +500,43 @@ export class ShoppingListDb {
         throw new Error(`Item not found: ${currentCanonicalName}`);
       }
 
+      const currentView = this.#getItemView(item.id);
       const nextCanonicalName =
         rawNextItem === undefined
           ? item.canonical_name
           : this.resolveCanonicalName(rawNextItem).toLowerCase();
-      const nextQty = qty === undefined ? item.qty : Number(qty);
+      const nextQty = qty === undefined ? currentView.qty : Number(qty);
 
       if (!Number.isFinite(nextQty) || nextQty <= 0) {
         throw new Error('Quantity must be a positive number');
       }
 
-      const nextNote = normalizedNote === undefined ? item.note : normalizedNote;
+      if (nextCanonicalName !== item.canonical_name) {
+        this.statements.renameItem.run(nextCanonicalName, item.id);
+      }
 
-      this.statements.updateItemById.run(nextCanonicalName, nextQty, nextNote, item.id);
+      const qtyChanged = nextQty !== currentView.qty;
+      const noteChanged = normalizedNote !== undefined && normalizedNote !== currentView.note;
 
-      const updatedItem = /** @type {ItemRow} */ (
-        assertDefined(
-          this.statements.getItemByCanonicalName.get(list.id, nextCanonicalName),
-          `Item not found after edit_item: ${nextCanonicalName}`
-        )
-      );
+      if (qtyChanged || noteChanged) {
+        const editableOrder = this.#getEditableOrder(currentView.orders, currentCanonicalName, 'edit aggregate item');
+
+        if (qtyChanged) {
+          this.statements.setOrderQty.run(nextQty, editableOrder.id);
+        }
+
+        if (noteChanged) {
+          this.statements.setOrderNote.run(normalizedNote ?? null, editableOrder.id);
+        }
+
+        this.statements.touchItem.run(item.id);
+      }
+
+      const updated = this.#getItemView(item.id);
 
       this.statements.insertEvent.run(
         list.id,
-        updatedItem.id,
+        item.id,
         'edit_item',
         JSON.stringify({
           rawItem: this.#normalizeItemName(currentRawItem),
@@ -525,18 +544,11 @@ export class ShoppingListDb {
           nextRawItem: rawNextItem === undefined ? undefined : this.#normalizeItemName(rawNextItem),
           nextCanonicalName,
           qty: nextQty,
-          note: nextNote
+          note: normalizedNote
         })
       );
 
-      return {
-        ok: true,
-        list: list.name,
-        item: updatedItem.canonical_name,
-        qty: updatedItem.qty,
-        status: updatedItem.status,
-        note: updatedItem.note
-      };
+      return this.#toMutationResult(list.name, updated);
     });
   }
 
@@ -548,13 +560,13 @@ export class ShoppingListDb {
   showList(listName, status = 'pending') {
     const normalizedListName = this.#normalizeListName(listName);
     const list = this.createList(normalizedListName);
-    const items = /** @type {ListItemRow[]} */ (this.statements.showList.all(list.id, status));
+    const items = /** @type {ItemRow[]} */ (this.statements.showList.all(list.id, status));
 
     return {
       ok: true,
       list: list.name,
       status,
-      items
+      items: items.map((item) => this.#buildItemView(item))
     };
   }
 
@@ -591,7 +603,9 @@ export class ShoppingListDb {
       list: list.name,
       version,
       changed: true,
-      items: /** @type {ListItemRow[]} */ (this.statements.showAllItems.all(list.id))
+      items: /** @type {ItemRow[]} */ (this.statements.showAllItems.all(list.id)).map((item) =>
+        this.#buildItemView(item)
+      )
     };
   }
 
@@ -603,13 +617,21 @@ export class ShoppingListDb {
     const parsedLimit = Number(limit);
 
     if (!Number.isInteger(parsedLimit) || parsedLimit <= 0) {
-      throw new Error('Limit must be a positive integer');
+      throw new Error('Limit must be a positive number');
     }
 
     return {
       ok: true,
       events: /** @type {EventRow[]} */ (this.statements.showEvents.all(parsedLimit))
     };
+  }
+
+  /**
+   * @param {number} mediaId
+   * @returns {MediaRow | undefined}
+   */
+  getMediaById(mediaId) {
+    return /** @type {MediaRow | undefined} */ (this.statements.getMediaById.get(mediaId));
   }
 
   /**
@@ -626,7 +648,7 @@ export class ShoppingListDb {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         list_id INTEGER NOT NULL,
         canonical_name TEXT NOT NULL,
-        qty REAL NOT NULL DEFAULT 1,
+        qty REAL NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'pending',
         note TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -639,6 +661,29 @@ export class ShoppingListDb {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         alias TEXT NOT NULL UNIQUE,
         canonical_name TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS item_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_id INTEGER NOT NULL,
+        ordered_by TEXT NOT NULL,
+        qty REAL NOT NULL DEFAULT 0,
+        image_ref TEXT,
+        note TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(item_id, ordered_by),
+        FOREIGN KEY (item_id) REFERENCES items(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS order_media (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_order_id INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('image', 'audio', 'video')),
+        path TEXT NOT NULL,
+        mime_type TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (item_order_id) REFERENCES item_orders(id)
       );
 
       CREATE TABLE IF NOT EXISTS events (
@@ -679,32 +724,27 @@ export class ShoppingListDb {
         FROM item_aliases
         WHERE lower(alias) = lower(?)
       `),
-      upsertItem: this.db.prepare(`
-        INSERT INTO items(list_id, canonical_name, qty, status, note, updated_at)
-        VALUES (?, ?, ?, 'pending', ?, CURRENT_TIMESTAMP)
+      ensureItem: this.db.prepare(`
+        INSERT INTO items(list_id, canonical_name, status, updated_at)
+        VALUES (?, ?, 'pending', CURRENT_TIMESTAMP)
         ON CONFLICT(list_id, canonical_name)
         DO UPDATE SET
-          qty = items.qty + excluded.qty,
           status = 'pending',
-          note = COALESCE(excluded.note, items.note),
           updated_at = CURRENT_TIMESTAMP
       `),
       getItemByCanonicalName: this.db.prepare(`
-        SELECT id, list_id, canonical_name, qty, status, note, created_at, updated_at
+        SELECT id, list_id, canonical_name, status, note, created_at, updated_at
         FROM items
         WHERE list_id = ? AND canonical_name = ?
       `),
-      setItemNote: this.db.prepare(`
-        UPDATE items
-        SET note = ?,
-            updated_at = CURRENT_TIMESTAMP
+      getItemById: this.db.prepare(`
+        SELECT id, list_id, canonical_name, status, note, created_at, updated_at
+        FROM items
         WHERE id = ?
       `),
-      updateItemById: this.db.prepare(`
+      renameItem: this.db.prepare(`
         UPDATE items
         SET canonical_name = ?,
-            qty = ?,
-            note = ?,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `),
@@ -716,29 +756,27 @@ export class ShoppingListDb {
         UPDATE items
         SET status = 'bought',
             updated_at = CURRENT_TIMESTAMP
-        WHERE list_id = ? AND canonical_name = ?
+        WHERE id = ?
       `),
       markPending: this.db.prepare(`
         UPDATE items
         SET status = 'pending',
             updated_at = CURRENT_TIMESTAMP
-        WHERE list_id = ? AND canonical_name = ?
+        WHERE id = ?
       `),
       markRemoved: this.db.prepare(`
         UPDATE items
         SET status = 'removed',
             updated_at = CURRENT_TIMESTAMP
-        WHERE list_id = ? AND canonical_name = ?
+        WHERE id = ?
       `),
-      updateItemQtyAndStatus: this.db.prepare(`
+      touchItem: this.db.prepare(`
         UPDATE items
-        SET qty = ?,
-            status = ?,
-            updated_at = CURRENT_TIMESTAMP
+        SET updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `),
       showAllItems: this.db.prepare(`
-        SELECT canonical_name AS name, qty, status, note, created_at, updated_at
+        SELECT id, list_id, canonical_name, status, note, created_at, updated_at
         FROM items
         WHERE list_id = ?
         ORDER BY
@@ -755,7 +793,7 @@ export class ShoppingListDb {
         WHERE list_id = ?
       `),
       showList: this.db.prepare(`
-        SELECT canonical_name AS name, qty, status, note, created_at, updated_at
+        SELECT id, list_id, canonical_name, status, note, created_at, updated_at
         FROM items
         WHERE list_id = ? AND status = ?
         ORDER BY canonical_name
@@ -771,8 +809,245 @@ export class ShoppingListDb {
         FROM events
         ORDER BY id DESC
         LIMIT ?
+      `),
+      upsertOrder: this.db.prepare(`
+        INSERT INTO item_orders(item_id, ordered_by, qty, note, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(item_id, ordered_by)
+        DO UPDATE SET
+          qty = item_orders.qty + excluded.qty,
+          note = COALESCE(excluded.note, item_orders.note),
+          updated_at = CURRENT_TIMESTAMP
+      `),
+      setOrderQty: this.db.prepare(`
+        UPDATE item_orders
+        SET qty = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `),
+      setOrderNote: this.db.prepare(`
+        UPDATE item_orders
+        SET note = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `),
+      deleteOrder: this.db.prepare(`
+        DELETE FROM item_orders
+        WHERE id = ?
+      `),
+      getOrdersForItem: this.db.prepare(`
+        SELECT id, item_id, ordered_by, qty, note, created_at, updated_at
+        FROM item_orders
+        WHERE item_id = ?
+          AND qty > 0
+        ORDER BY lower(ordered_by), id
+      `),
+      insertOrderMedia: this.db.prepare(`
+        INSERT INTO order_media(item_order_id, kind, path, mime_type)
+        VALUES (?, ?, ?, ?)
+      `),
+      getMediaForOrder: this.db.prepare(`
+        SELECT id, item_order_id, kind, path, mime_type, created_at
+        FROM order_media
+        WHERE item_order_id = ?
+        ORDER BY id
+      `),
+      getMediaById: this.db.prepare(`
+        SELECT id, item_order_id, kind, path, mime_type, created_at
+        FROM order_media
+        WHERE id = ?
+      `),
+      legacyOrderMediaRows: this.db.prepare(`
+        SELECT id, image_ref
+        FROM item_orders
+        WHERE image_ref IS NOT NULL
+          AND trim(image_ref) <> ''
+      `),
+      existingMigratedMedia: this.db.prepare(`
+        SELECT id
+        FROM order_media
+        WHERE item_order_id = ?
+          AND path = ?
+        LIMIT 1
+      `),
+      backfillOrders: this.db.prepare(`
+        INSERT INTO item_orders(item_id, ordered_by, qty, note)
+        SELECT items.id,
+               ?,
+               items.qty,
+               items.note
+        FROM items
+        WHERE items.qty > 0
+          AND NOT EXISTS (
+            SELECT 1
+            FROM item_orders
+            WHERE item_orders.item_id = items.id
+          )
       `)
     };
+  }
+
+  /**
+   * @param {string} listName
+   * @param {string} rawItem
+   * @param {'bought' | 'pending'} status
+   * @param {'mark_bought' | 'mark_pending'} action
+   * @returns {ItemMutationResult}
+   */
+  #setItemStatus(listName, rawItem, status, action) {
+    const normalizedListName = this.#normalizeListName(listName);
+
+    return this.#transaction(() => {
+      const list = this.createList(normalizedListName);
+      const canonicalName = this.resolveCanonicalName(rawItem).toLowerCase();
+      const item = /** @type {ItemRow | undefined} */ (
+        this.statements.getItemByCanonicalName.get(list.id, canonicalName)
+      );
+
+      if (item === undefined) {
+        throw new Error(`Item not found: ${canonicalName}`);
+      }
+
+      const statusStatement = status === 'bought' ? this.statements.markBought : this.statements.markPending;
+      const result = /** @type {SqliteRunResult} */ (statusStatement.run(item.id));
+
+      if (result.changes === 0) {
+        throw new Error(`Item not found: ${canonicalName}`);
+      }
+
+      const updated = this.#getItemView(item.id);
+
+      this.statements.insertEvent.run(
+        list.id,
+        item.id,
+        action,
+        JSON.stringify({
+          rawItem: this.#normalizeItemName(rawItem),
+          canonicalName
+        })
+      );
+
+      return this.#toMutationResult(list.name, updated);
+    });
+  }
+
+  /**
+   * @param {number} itemId
+   * @returns {ListItemRow}
+   */
+  #getItemView(itemId) {
+    const item = /** @type {ItemRow | undefined} */ (this.statements.getItemById.get(itemId));
+    if (item === undefined) {
+      throw new Error(`Item not found: ${itemId}`);
+    }
+    return this.#buildItemView(item);
+  }
+
+  /**
+   * @param {ItemRow} item
+   * @returns {ListItemRow}
+   */
+  #buildItemView(item) {
+    const orders = this.#getOrdersForItem(item.id).map((order) => ({
+      id: order.id,
+      ordered_by: order.ordered_by,
+      qty: order.qty,
+      note: order.note,
+      created_at: order.created_at,
+      updated_at: order.updated_at,
+      media: this.#getMediaForOrder(order.id)
+    }));
+
+    return {
+      name: item.canonical_name,
+      qty: sumOrderQty(orders),
+      status: item.status,
+      note: pickAggregateNote(item.note, orders),
+      created_at: item.created_at,
+      updated_at: item.updated_at,
+      orders
+    };
+  }
+
+  /**
+   * @param {string} listName
+   * @param {ListItemRow} item
+   * @returns {ItemMutationResult}
+   */
+  #toMutationResult(listName, item) {
+    return {
+      ok: true,
+      list: listName,
+      item: item.name,
+      qty: item.qty,
+      status: item.status,
+      note: item.note,
+      orders: item.orders
+    };
+  }
+
+  /**
+   * @param {number} itemId
+   * @returns {OrderRow[]}
+   */
+  #getOrdersForItem(itemId) {
+    return /** @type {OrderRow[]} */ (this.statements.getOrdersForItem.all(itemId));
+  }
+
+  /**
+   * @param {number} orderId
+   * @returns {OrderMediaView[]}
+   */
+  #getMediaForOrder(orderId) {
+    return /** @type {MediaRow[]} */ (this.statements.getMediaForOrder.all(orderId)).map((media) => ({
+      id: media.id,
+      kind: media.kind,
+      path: media.path,
+      mime_type: media.mime_type,
+      created_at: media.created_at
+    }));
+  }
+
+  /**
+   * @param {Array<{ id: number, ordered_by: string }>} orders
+   * @param {string} canonicalName
+   * @param {string} action
+   * @returns {{ id: number, ordered_by: string }}
+   */
+  #getEditableOrder(orders, canonicalName, action) {
+    if (orders.length === 1) {
+      return orders[0];
+    }
+
+    const unknownOrder = orders.find((order) => order.ordered_by === UNKNOWN_ORDERED_BY);
+    if (unknownOrder !== undefined && orders.length === 1) {
+      return unknownOrder;
+    }
+
+    throw new Error(`Cannot ${action} for ${canonicalName} because it has multiple orders`);
+  }
+
+  /**
+   * @returns {void}
+   */
+  #backfillOrders() {
+    this.statements.backfillOrders.run(UNKNOWN_ORDERED_BY);
+  }
+
+  /**
+   * @returns {void}
+   */
+  #migrateLegacyOrderMedia() {
+    const rows = /** @type {Array<{ id: number, image_ref: string }>} */ (this.statements.legacyOrderMediaRows.all());
+
+    for (const row of rows) {
+      const existing = this.statements.existingMigratedMedia.get(row.id, row.image_ref);
+      if (existing !== undefined) {
+        continue;
+      }
+
+      this.statements.insertOrderMedia.run(row.id, inferMediaKind(row.image_ref), row.image_ref, inferMimeType(row.image_ref));
+    }
   }
 
   /**
@@ -791,41 +1066,33 @@ export class ShoppingListDb {
   }
 
   /**
+   * @param {string} columnName
+   * @param {string} columnType
    * @returns {void}
    */
-  #backfillItemNotesFromOrders() {
-    const row = /** @type {{ name: string } | undefined} */ (
-      this.db.prepare(`
-        SELECT name
-        FROM sqlite_master
-        WHERE type = 'table' AND name = 'item_orders'
-      `).get()
+  #ensureOrderColumn(columnName, columnType) {
+    const columns = /** @type {Array<{ name: string }>} */ (
+      this.db.prepare('PRAGMA table_info(item_orders)').all()
     );
 
-    if (row === undefined) {
-      return;
+    if (!columns.some((column) => column.name === columnName)) {
+      this.db.exec(`ALTER TABLE item_orders ADD COLUMN ${columnName} ${columnType}`);
     }
+  }
 
-    this.db.exec(`
-      UPDATE items
-      SET note = (
-        SELECT item_orders.note
-        FROM item_orders
-        WHERE item_orders.item_id = items.id
-          AND item_orders.note IS NOT NULL
-          AND trim(item_orders.note) <> ''
-        ORDER BY item_orders.updated_at DESC, item_orders.id DESC
-        LIMIT 1
-      )
-      WHERE (items.note IS NULL OR trim(items.note) = '')
-        AND EXISTS (
-          SELECT 1
-          FROM item_orders
-          WHERE item_orders.item_id = items.id
-            AND item_orders.note IS NOT NULL
-            AND trim(item_orders.note) <> ''
-        )
-    `);
+  /**
+   * @param {string} columnName
+   * @param {string} columnType
+   * @returns {void}
+   */
+  #ensureMediaColumn(columnName, columnType) {
+    const columns = /** @type {Array<{ name: string }>} */ (
+      this.db.prepare('PRAGMA table_info(order_media)').all()
+    );
+
+    if (!columns.some((column) => column.name === columnName)) {
+      this.db.exec(`ALTER TABLE order_media ADD COLUMN ${columnName} ${columnType}`);
+    }
   }
 
   /**
@@ -878,5 +1145,104 @@ export class ShoppingListDb {
 
     const normalized = note.trim().replace(/\s+/g, ' ');
     return normalized === '' ? null : normalized;
+  }
+}
+
+/**
+ * @param {Array<{ qty: number }>} orders
+ * @returns {number}
+ */
+function sumOrderQty(orders) {
+  return orders.reduce((total, order) => total + order.qty, 0);
+}
+
+/**
+ * @param {string | null} fallbackNote
+ * @param {OrderView[]} orders
+ * @returns {string | null}
+ */
+function pickAggregateNote(fallbackNote, orders) {
+  const notedOrders = orders
+    .filter((order) => order.note !== null && order.note.trim() !== '')
+    .sort((left, right) => {
+      const dateDiff = Date.parse(right.updated_at) - Date.parse(left.updated_at);
+      return dateDiff === 0 ? right.id - left.id : dateDiff;
+    });
+
+  return notedOrders[0]?.note ?? fallbackNote ?? null;
+}
+
+/**
+ * @param {OrderRow[]} orders
+ * @returns {OrderRow[]}
+ */
+function sortOrdersForRemoval(orders) {
+  return [...orders].sort((left, right) => {
+    if (left.ordered_by === UNKNOWN_ORDERED_BY && right.ordered_by !== UNKNOWN_ORDERED_BY) {
+      return -1;
+    }
+
+    if (right.ordered_by === UNKNOWN_ORDERED_BY && left.ordered_by !== UNKNOWN_ORDERED_BY) {
+      return 1;
+    }
+
+    const updatedAtDiff = Date.parse(right.updated_at) - Date.parse(left.updated_at);
+    return updatedAtDiff === 0 ? right.id - left.id : updatedAtDiff;
+  });
+}
+
+/**
+ * @param {string} mediaPath
+ * @returns {MediaKind}
+ */
+function inferMediaKind(mediaPath) {
+  const extension = path.extname(mediaPath).toLowerCase();
+
+  if (['.ogg', '.mp3', '.wav', '.m4a', '.aac', '.flac'].includes(extension)) {
+    return 'audio';
+  }
+
+  if (['.mp4', '.mov', '.webm', '.mkv', '.avi'].includes(extension)) {
+    return 'video';
+  }
+
+  return 'image';
+}
+
+/**
+ * @param {string} mediaPath
+ * @returns {string | null}
+ */
+function inferMimeType(mediaPath) {
+  const extension = path.extname(mediaPath).toLowerCase();
+
+  switch (extension) {
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.png':
+      return 'image/png';
+    case '.gif':
+      return 'image/gif';
+    case '.webp':
+      return 'image/webp';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.ogg':
+      return 'audio/ogg';
+    case '.mp3':
+      return 'audio/mpeg';
+    case '.wav':
+      return 'audio/wav';
+    case '.m4a':
+      return 'audio/mp4';
+    case '.mp4':
+      return 'video/mp4';
+    case '.mov':
+      return 'video/quicktime';
+    case '.webm':
+      return 'video/webm';
+    default:
+      return null;
   }
 }

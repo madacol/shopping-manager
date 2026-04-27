@@ -137,6 +137,119 @@ function renderEditor(item) {
   return form;
 }
 
+function renderMedia(media) {
+  if (!media.url) {
+    return null;
+  }
+
+  if (media.kind === 'image') {
+    const image = document.createElement('img');
+    image.className = 'order-media order-media--image';
+    image.src = media.url;
+    image.alt = 'Referencia del pedido';
+    image.loading = 'lazy';
+    return image;
+  }
+
+  if (media.kind === 'audio') {
+    const audio = document.createElement('audio');
+    audio.className = 'order-media order-media--audio';
+    audio.controls = true;
+    audio.preload = 'metadata';
+    audio.src = media.url;
+    return audio;
+  }
+
+  if (media.kind === 'video') {
+    const video = document.createElement('video');
+    video.className = 'order-media order-media--video';
+    video.controls = true;
+    video.preload = 'metadata';
+    video.src = media.url;
+    return video;
+  }
+
+  return null;
+}
+
+function getVisibleOrders(item) {
+  if (!Array.isArray(item.orders) || item.orders.length === 0) {
+    return [];
+  }
+
+  return item.orders.filter((order) => {
+    const hasIdentity = order.ordered_by !== 'unknown';
+    const hasNote = Boolean(order.note);
+    const hasMedia = Array.isArray(order.media) && order.media.length > 0;
+    return hasIdentity || hasNote || hasMedia || item.orders.length > 1;
+  });
+}
+
+function itemHasMedia(item) {
+  return getVisibleOrders(item).some((order) => Array.isArray(order.media) && order.media.length > 0);
+}
+
+function renderOrders(item) {
+  const visibleOrders = getVisibleOrders(item);
+
+  if (visibleOrders.length === 0) {
+    return null;
+  }
+
+  const details = document.createElement('div');
+  details.className = 'item-details';
+
+  for (const order of visibleOrders) {
+    const card = document.createElement('div');
+    card.className = 'order-card';
+
+    const showHeader = visibleOrders.length > 1 || order.ordered_by !== 'unknown';
+
+    if (showHeader) {
+      const top = document.createElement('div');
+      top.className = 'order-topline';
+
+      const by = document.createElement('span');
+      by.className = 'order-by';
+      by.textContent = order.ordered_by === 'unknown' ? 'Pedido' : order.ordered_by;
+
+      const qty = document.createElement('span');
+      qty.className = 'order-qty';
+      qty.textContent = `x${fmtQty(order.qty)}`;
+
+      top.append(by, qty);
+      card.append(top);
+    }
+
+    if (order.note) {
+      const note = document.createElement('p');
+      note.className = 'order-note';
+      note.textContent = order.note;
+      card.append(note);
+    }
+
+    if (Array.isArray(order.media) && order.media.length > 0) {
+      const mediaStrip = document.createElement('div');
+      mediaStrip.className = 'order-media-strip';
+
+      for (const media of order.media) {
+        const mediaNode = renderMedia(media);
+        if (mediaNode) {
+          mediaStrip.append(mediaNode);
+        }
+      }
+
+      if (mediaStrip.childNodes.length > 0) {
+        card.append(mediaStrip);
+      }
+    }
+
+    details.append(card);
+  }
+
+  return details;
+}
+
 function renderItem(item, mode) {
   const li = document.createElement('li');
   const itemKey = getItemKey(item);
@@ -209,6 +322,14 @@ function renderItem(item, mode) {
     subline.append(noteEl);
   }
 
+  if (itemHasMedia(item)) {
+    const attachmentEl = document.createElement('span');
+    attachmentEl.className = 'item-attachment';
+    attachmentEl.textContent = 'Adjunto';
+    attachmentEl.title = 'Este item tiene archivos adjuntos';
+    subline.append(attachmentEl);
+  }
+
   if (isBusy) {
     const busyEl = document.createElement('span');
     busyEl.className = 'item-state-text';
@@ -236,6 +357,11 @@ function renderItem(item, mode) {
   row.append(rightButton);
 
   li.append(row);
+
+  const orders = isEditing ? renderOrders(item) : null;
+  if (orders) {
+    li.append(orders);
+  }
 
   if (isEditing) {
     li.append(renderEditor(item));
@@ -393,12 +519,6 @@ function toggleEditing(itemName) {
     changed: true,
     items: state.items
   });
-
-  const input = document.querySelector('.edit-form input[name="item"]');
-  if (input instanceof HTMLInputElement) {
-    input.focus();
-    input.select();
-  }
 }
 
 function closeEditing() {

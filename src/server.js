@@ -13,6 +13,7 @@ const DEFAULT_PORT = Number(process.env.PORT ?? 3000);
 const MAX_BODY_BYTES = 8 * 1024;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PUBLIC_DIR = path.resolve(__dirname, '../public');
+const WORKSPACE_ROOT = process.cwd();
 
 /**
  * @typedef {object} ServerOptions
@@ -186,6 +187,25 @@ function parseListRoute(pathname) {
 
 /**
  * @param {string} pathname
+ * @returns {{ mediaId: number } | null}
+ */
+function parseMediaRoute(pathname) {
+  const segments = pathname.split('/').filter(Boolean);
+
+  if (segments[0] !== 'api' || segments[1] !== 'media' || segments.length !== 3) {
+    return null;
+  }
+
+  const mediaId = Number(segments[2]);
+  if (!Number.isInteger(mediaId) || mediaId <= 0) {
+    return null;
+  }
+
+  return { mediaId };
+}
+
+/**
+ * @param {string} pathname
  * @returns {{ filePath: string, contentType: string } | null}
  */
 function resolveStaticAsset(pathname) {
@@ -206,6 +226,79 @@ function resolveStaticAsset(pathname) {
 }
 
 /**
+ * @param {ReturnType<ShoppingListDb['getListSnapshot']>} snapshot
+ * @returns {ReturnType<ShoppingListDb['getListSnapshot']>}
+ */
+function attachMediaUrls(snapshot) {
+  if (!snapshot.changed || !Array.isArray(snapshot.items)) {
+    return snapshot;
+  }
+
+  return {
+    ...snapshot,
+    items: snapshot.items.map((item) => ({
+      ...item,
+      orders: item.orders.map((order) => ({
+        ...order,
+        media: order.media.map((media) => ({
+          ...media,
+          url: `/api/media/${media.id}`
+        }))
+      }))
+    }))
+  };
+}
+
+/**
+ * @param {string} storedPath
+ * @returns {string}
+ */
+function resolveMediaPath(storedPath) {
+  return path.isAbsolute(storedPath) ? storedPath : path.resolve(WORKSPACE_ROOT, storedPath);
+}
+
+/**
+ * @param {string | null} mimeType
+ * @param {string} mediaPath
+ * @returns {string}
+ */
+function getContentType(mimeType, mediaPath) {
+  if (mimeType) {
+    return mimeType;
+  }
+
+  switch (path.extname(mediaPath).toLowerCase()) {
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.png':
+      return 'image/png';
+    case '.gif':
+      return 'image/gif';
+    case '.webp':
+      return 'image/webp';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.ogg':
+      return 'audio/ogg';
+    case '.mp3':
+      return 'audio/mpeg';
+    case '.wav':
+      return 'audio/wav';
+    case '.m4a':
+      return 'audio/mp4';
+    case '.mp4':
+      return 'video/mp4';
+    case '.mov':
+      return 'video/quicktime';
+    case '.webm':
+      return 'video/webm';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+/**
  * @param {import('node:http').IncomingMessage} request
  * @param {import('node:http').ServerResponse} response
  * @param {ShoppingListDb} db
@@ -215,6 +308,30 @@ function resolveStaticAsset(pathname) {
 async function handleRequest(request, response, db, publicDir) {
   const method = request.method ?? 'GET';
   const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+
+  const mediaRoute = parseMediaRoute(url.pathname);
+  if (mediaRoute !== null) {
+    if (method !== 'GET') {
+      sendJson(response, 405, { ok: false, error: 'Method not allowed' });
+      return;
+    }
+
+    const media = db.getMediaById(mediaRoute.mediaId);
+    if (media === undefined) {
+      sendJson(response, 404, { ok: false, error: 'Media not found' });
+      return;
+    }
+
+    const mediaPath = resolveMediaPath(media.path);
+    const body = await readFile(mediaPath);
+    response.writeHead(200, {
+      'content-type': getContentType(media.mime_type, mediaPath),
+      'cache-control': 'no-store',
+      'content-length': body.byteLength
+    });
+    response.end(body);
+    return;
+  }
 
   if (method === 'GET' && url.pathname === '/api/lists') {
     sendJson(response, 200, {
@@ -230,7 +347,7 @@ async function handleRequest(request, response, db, publicDir) {
 
     if (method === 'GET' && listRoute.action === null) {
       const since = url.searchParams.get('since');
-      sendJson(response, 200, db.getListSnapshot(listName, since));
+      sendJson(response, 200, attachMediaUrls(db.getListSnapshot(listName, since)));
       return;
     }
 
@@ -278,7 +395,7 @@ async function handleRequest(request, response, db, publicDir) {
     sendJson(response, 200, {
       ok: true,
       mutation,
-      snapshot: db.getListSnapshot(listName)
+      snapshot: attachMediaUrls(db.getListSnapshot(listName))
     });
     return;
   }
