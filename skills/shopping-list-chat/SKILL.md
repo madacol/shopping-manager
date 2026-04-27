@@ -6,6 +6,9 @@ description: Manage this chat's shopping list in a local SQLite database from na
 # Shopping List Chat
 
 Use the bundled script to persist shopping-list changes in `shopping-lists.sqlite` in the current workspace.
+
+This is the documentation to read before handling shopping-list requests in this workspace.
+
 Track metadata per requester, not just per item:
 
 - `item.qty`: total pending quantity
@@ -62,6 +65,22 @@ Use `node skills/shopping-list-chat/scripts/shopping-list.mjs ...`.
 - Store images on the matching per-person order.
 - Use soft delete via `status = "removed"` instead of hard delete.
 - Normalize obvious whitespace and casing, but do not silently rewrite meaningful product names.
+
+## Image Association
+
+- Images are attached per requester order, not directly on the aggregate item.
+- The stored field is `item_orders.image_ref`.
+- The practical key is `(list, canonical item, ordered_by)`.
+- `add-item ... --by ... --image ...` creates or updates that person's order row.
+- `annotate-order ... --by ... --image ...` updates the existing row for that same requester.
+- `items.qty` is the sum of all matching `item_orders.qty`.
+- The simpler DB/web layer may surface note text, but it does not expose `image_ref`.
+
+## Current Architecture
+
+- `skills/shopping-list-chat/scripts/shopping-list.mjs` is the authoritative CLI for chat requests, per-person provenance, and image association.
+- `src/cli.js`, `src/server.js`, and `public/list.js` use a simpler item-level model for the web app.
+- If the request is about chat operations, prefer the skill script, not the simpler CLI.
 
 ## Current Chat Convention
 
