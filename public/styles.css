@@ -31,10 +31,6 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-body.modal-open {
-  overflow: hidden;
-}
-
 button,
 input {
   font: inherit;
@@ -424,121 +420,49 @@ input {
   background: var(--button-dark);
 }
 
-.modal-shell {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: grid;
-  place-items: end center;
-  padding: 16px;
+.icon-btn--save {
+  color: var(--accent);
 }
 
-.modal-shell[hidden] {
-  display: none;
-}
-
-.modal-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(5, 5, 7, 0.7);
-  backdrop-filter: blur(3px);
-}
-
-.modal-card {
-  position: relative;
-  width: min(100%, 560px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 24px;
-  background: #1a1a1d;
-  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.42);
-  padding: 16px;
-}
-
-.modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.modal-header h2 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 800;
-  letter-spacing: -0.01em;
-}
-
-.modal-close {
-  width: 38px;
-  height: 38px;
-  border: none;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.05);
+.icon-btn--ghost {
   color: var(--muted);
-  cursor: pointer;
-  font-size: 1.5rem;
-  line-height: 1;
 }
 
 .edit-form {
   display: grid;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) 80px;
+  gap: 8px;
+  padding: 0 16px 16px;
 }
 
-.edit-form-top {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 96px;
-  gap: 10px;
-}
-
-.edit-input {
+.edit-form input {
   min-width: 0;
-  padding: 13px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
-  background: #131316;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #17171a;
   color: var(--text);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
 }
 
-.edit-input:focus {
+.edit-form input:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(240, 115, 74, 0.18);
 }
 
-.edit-input::placeholder {
-  color: #66666d;
-}
-
-.edit-input--qty {
-  text-align: center;
+.edit-form input[name="note"] {
+  grid-column: 1 / -1;
 }
 
 .edit-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding-top: 6px;
 }
 
-.edit-action {
-  border: none;
-  border-radius: 14px;
-  padding: 11px 16px;
-  cursor: pointer;
-  font-weight: 800;
-}
-
-.edit-action--ghost {
-  background: rgba(255, 255, 255, 0.07);
-  color: var(--muted);
-}
-
-.edit-action--save {
-  background: var(--accent);
-  color: #fff;
+.item[data-expanded="true"] .item-name,
+.item[data-expanded="true"] .item-note-text {
+  -webkit-line-clamp: unset;
+  overflow: visible;
 }
 
 .empty {
@@ -621,17 +545,7 @@ input {
     grid-template-columns: minmax(0, 1fr) 52px;
   }
 
-  .modal-shell {
-    padding: 8px;
-  }
-
-  .modal-card {
-    width: 100%;
-    border-radius: 20px;
-    padding: 14px;
-  }
-
-  .edit-form-top {
-    grid-template-columns: minmax(0, 1fr) 82px;
+  .edit-form {
+    grid-template-columns: minmax(0, 1fr) 70px;
   }
 }
