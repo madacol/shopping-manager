@@ -379,8 +379,9 @@ async function send(action, payload, busyItem, busyLabel = 'Guardando...') {
   }
 }
 
-function startEditing(itemName) {
+function toggleEditing(itemName) {
   if (state.editingItem === itemName) {
+    closeEditing();
     return;
   }
 
@@ -465,7 +466,7 @@ function handleListClick(event) {
       send('pending', { item: itemName }, itemName, 'Reagregando...');
       break;
     case 'edit':
-      startEditing(itemName);
+      toggleEditing(itemName);
       break;
     case 'cancel-edit':
       closeEditing();

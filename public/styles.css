@@ -193,6 +193,45 @@ input {
   color: var(--text);
 }
 
+#pending-items .item {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    0 8px 22px rgba(0, 0, 0, 0.16);
+}
+
+#pending-items .item-name {
+  font-size: 1.04rem;
+  font-weight: 800;
+}
+
+#pending-items .item-note-text {
+  color: rgba(239, 239, 242, 0.78);
+}
+
+#activity-section {
+  opacity: 0.58;
+  transition: opacity 180ms ease;
+}
+
+#activity-section:hover,
+#activity-section:focus-within {
+  opacity: 0.84;
+}
+
+#activity-items .item-name {
+  font-size: 0.94rem;
+  font-weight: 700;
+}
+
+#activity-items .item-note-text {
+  color: rgba(138, 138, 146, 0.86);
+}
+
+#activity-items .item-qty,
+#activity-items .state-pill {
+  opacity: 0.88;
+}
+
 .item-list,
 .list-grid {
   list-style: none;
