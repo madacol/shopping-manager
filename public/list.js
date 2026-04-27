@@ -30,6 +30,11 @@ const syncStatus = $('#sync-status');
 const addForm = $('#add-form');
 const nameInput = $('#item-name');
 const qtyInput = $('#item-qty');
+const editModal = $('#edit-modal');
+const editForm = $('#edit-form');
+const editNameInput = $('#edit-item-name');
+const editQtyInput = $('#edit-item-qty');
+const editNoteInput = $('#edit-item-note');
 const pendingList = $('#pending-items');
 const activityList = $('#activity-items');
 const pendingCount = $('#pending-count');
@@ -86,70 +91,14 @@ function makeIconButton(action, kind, title) {
   return button;
 }
 
-function renderEditor(item) {
-  const form = document.createElement('form');
-  form.className = 'edit-form';
-  form.dataset.action = 'save-edit';
-  form.dataset.itemName = item.name;
-
-  const nameField = document.createElement('input');
-  nameField.name = 'item';
-  nameField.type = 'text';
-  nameField.required = true;
-  nameField.value = item.name;
-  nameField.placeholder = 'Producto';
-
-  const qtyField = document.createElement('input');
-  qtyField.name = 'qty';
-  qtyField.type = 'number';
-  qtyField.inputMode = 'decimal';
-  qtyField.min = '0.1';
-  qtyField.step = '0.1';
-  qtyField.required = true;
-  qtyField.value = fmtQty(item.qty);
-
-  const noteField = document.createElement('input');
-  noteField.name = 'note';
-  noteField.type = 'text';
-  noteField.value = item.note ?? '';
-  noteField.placeholder = 'Nota';
-
-  const actions = document.createElement('div');
-  actions.className = 'edit-actions';
-
-  const saveButton = document.createElement('button');
-  saveButton.type = 'submit';
-  saveButton.className = 'icon-btn icon-btn--save';
-  saveButton.title = 'Guardar';
-  saveButton.setAttribute('aria-label', 'Guardar');
-  saveButton.innerHTML = ICONS.save;
-
-  const cancelButton = document.createElement('button');
-  cancelButton.type = 'button';
-  cancelButton.className = 'icon-btn icon-btn--ghost';
-  cancelButton.dataset.action = 'cancel-edit';
-  cancelButton.title = 'Cancelar';
-  cancelButton.setAttribute('aria-label', 'Cancelar');
-  cancelButton.innerHTML = ICONS.cancel;
-
-  actions.append(saveButton, cancelButton);
-  form.append(nameField, qtyField, noteField, actions);
-  return form;
-}
-
 function renderItem(item, mode) {
   const li = document.createElement('li');
   const itemKey = getItemKey(item);
-  const isEditing = state.editingItem === itemKey;
   const isBusy = state.busyItem === itemKey;
 
   li.className = `item item--${mode}`;
   li.dataset.itemName = itemKey;
   li.dataset.status = item.status;
-
-  if (isEditing) {
-    li.dataset.expanded = 'true';
-  }
 
   if (isBusy) {
     li.dataset.busy = 'true';
@@ -236,10 +185,6 @@ function renderItem(item, mode) {
   row.append(rightButton);
 
   li.append(row);
-
-  if (isEditing) {
-    li.append(renderEditor(item));
-  }
 
   return li;
 }
@@ -379,37 +324,29 @@ async function send(action, payload, busyItem, busyLabel = 'Guardando...') {
   }
 }
 
-function toggleEditing(itemName) {
-  if (state.editingItem === itemName) {
-    closeEditing();
+function openEditModal(itemName) {
+  const item = state.items.find((candidate) => getItemKey(candidate) === itemName);
+  if (item === undefined) {
     return;
   }
 
   state.editingItem = itemName;
-  apply({
-    ok: true,
-    list: state.list,
-    version: state.version ?? 0,
-    changed: true,
-    items: state.items
-  });
+  editForm.dataset.itemName = itemName;
+  editNameInput.value = item.name;
+  editQtyInput.value = fmtQty(item.qty);
+  editNoteInput.value = item.note ?? '';
+  editModal.hidden = false;
+  document.body.classList.add('modal-open');
 
-  const input = document.querySelector('.edit-form input[name="item"]');
-  if (input instanceof HTMLInputElement) {
-    input.focus();
-    input.select();
-  }
+  editNameInput.focus();
+  editNameInput.select();
 }
 
 function closeEditing() {
   state.editingItem = null;
-  apply({
-    ok: true,
-    list: state.list,
-    version: state.version ?? 0,
-    changed: true,
-    items: state.items
-  });
+  editForm.dataset.itemName = '';
+  editModal.hidden = true;
+  document.body.classList.remove('modal-open');
   flushDeferredSnapshot();
 }
 
@@ -429,7 +366,7 @@ async function handleEditSubmit(form) {
     return;
   }
 
-  state.editingItem = null;
+  closeEditing();
   await send('edit', { currentItem, item, qty, note }, currentItem);
   flushDeferredSnapshot();
 }
@@ -466,10 +403,7 @@ function handleListClick(event) {
       send('pending', { item: itemName }, itemName, 'Reagregando...');
       break;
     case 'edit':
-      toggleEditing(itemName);
-      break;
-    case 'cancel-edit':
-      closeEditing();
+      openEditModal(itemName);
       break;
     default:
       break;
@@ -479,14 +413,27 @@ function handleListClick(event) {
 pendingList.addEventListener('click', handleListClick);
 activityList.addEventListener('click', handleListClick);
 
-document.addEventListener('submit', (event) => {
-  const form = event.target;
-  if (!(form instanceof HTMLFormElement) || !form.classList.contains('edit-form')) {
+editForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  handleEditSubmit(editForm);
+});
+
+editModal.addEventListener('click', (event) => {
+  const target = event.target instanceof Element ? event.target : null;
+  if (target === null) {
     return;
   }
 
-  event.preventDefault();
-  handleEditSubmit(form);
+  const action = target.closest('[data-action]')?.getAttribute('data-action');
+  if (action === 'cancel-edit' || action === 'close-modal') {
+    closeEditing();
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && state.editingItem !== null) {
+    closeEditing();
+  }
 });
 
 addForm.addEventListener('submit', async (event) => {
