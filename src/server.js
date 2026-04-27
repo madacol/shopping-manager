@@ -1,0 +1,273 @@
+// @ts-check
+
+import { createServer } from 'node:http';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { ShoppingListDb } from './shopping-list-db.js';
+
+const DEFAULT_DB_PATH = process.env.SHOPPING_LIST_DB ?? 'shopping-lists.sqlite';
+const DEFAULT_HOST = process.env.HOST ?? '127.0.0.1';
+const DEFAULT_PORT = Number(process.env.PORT ?? 3000);
+const MAX_BODY_BYTES = 8 * 1024;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_PUBLIC_DIR = path.resolve(__dirname, '../public');
+
+/**
+ * @typedef {object} ServerOptions
+ * @property {string=} dbPath
+ * @property {string=} publicDir
+ */
+
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isRecord(value) {
+  return typeof value === 'object' && value !== null;
+}
+
+/**
+ * @param {import('node:http').ServerResponse} response
+ * @param {number} statusCode
+ * @param {unknown} payload
+ * @returns {void}
+ */
+function sendJson(response, statusCode, payload) {
+  const body = JSON.stringify(payload);
+  response.writeHead(statusCode, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    'content-length': Buffer.byteLength(body)
+  });
+  response.end(body);
+}
+
+/**
+ * @param {import('node:http').IncomingMessage} request
+ * @returns {Promise<Record<string, unknown>>}
+ */
+async function readJsonBody(request) {
+  /** @type {Buffer[]} */
+  const chunks = [];
+  let totalBytes = 0;
+
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+
+    if (totalBytes > MAX_BODY_BYTES) {
+      throw new Error('Request body is too large');
+    }
+
+    chunks.push(buffer);
+  }
+
+  if (chunks.length === 0) {
+    return {};
+  }
+
+  const rawBody = Buffer.concat(chunks).toString('utf8');
+  const parsedBody = JSON.parse(rawBody);
+
+  if (!isRecord(parsedBody)) {
+    throw new Error('JSON body must be an object');
+  }
+
+  return parsedBody;
+}
+
+/**
+ * @param {Record<string, unknown>} payload
+ * @returns {{ item: string, qty: number | undefined, note: string | undefined }}
+ */
+function parseItemPayload(payload) {
+  if (typeof payload.item !== 'string' || payload.item.trim() === '') {
+    throw new Error('Item is required');
+  }
+
+  const note =
+    payload.note === undefined
+      ? undefined
+      : typeof payload.note === 'string'
+        ? payload.note
+        : (() => {
+            throw new Error('Note must be a string');
+          })();
+
+  if (payload.qty === undefined) {
+    return {
+      item: payload.item,
+      qty: undefined,
+      note
+    };
+  }
+
+  const qty = Number(payload.qty);
+
+  if (!Number.isFinite(qty) || qty <= 0) {
+    throw new Error('Quantity must be a positive number');
+  }
+
+  return {
+    item: payload.item,
+    qty,
+    note
+  };
+}
+
+/**
+ * @param {string} pathname
+ * @returns {{ listName: string, action: string | null } | null}
+ */
+function parseListRoute(pathname) {
+  const segments = pathname.split('/').filter(Boolean);
+
+  if (segments[0] !== 'api' || segments[1] !== 'lists' || segments.length < 3 || segments.length > 4) {
+    return null;
+  }
+
+  return {
+    listName: decodeURIComponent(segments[2]),
+    action: segments[3] ?? null
+  };
+}
+
+/**
+ * @param {string} pathname
+ * @returns {{ filePath: string, contentType: string } | null}
+ */
+function resolveStaticAsset(pathname) {
+  switch (pathname) {
+    case '/':
+      return { filePath: 'index.html', contentType: 'text/html; charset=utf-8' };
+    case '/index.js':
+      return { filePath: 'index.js', contentType: 'text/javascript; charset=utf-8' };
+    case '/list.html':
+      return { filePath: 'list.html', contentType: 'text/html; charset=utf-8' };
+    case '/list.js':
+      return { filePath: 'list.js', contentType: 'text/javascript; charset=utf-8' };
+    case '/styles.css':
+      return { filePath: 'styles.css', contentType: 'text/css; charset=utf-8' };
+    default:
+      return null;
+  }
+}
+
+/**
+ * @param {import('node:http').IncomingMessage} request
+ * @param {import('node:http').ServerResponse} response
+ * @param {ShoppingListDb} db
+ * @param {string} publicDir
+ * @returns {Promise<void>}
+ */
+async function handleRequest(request, response, db, publicDir) {
+  const method = request.method ?? 'GET';
+  const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+
+  if (method === 'GET' && url.pathname === '/api/lists') {
+    sendJson(response, 200, {
+      ok: true,
+      lists: db.listLists()
+    });
+    return;
+  }
+
+  const listRoute = parseListRoute(url.pathname);
+  if (listRoute !== null) {
+    const listName = listRoute.listName;
+
+    if (method === 'GET' && listRoute.action === null) {
+      const since = url.searchParams.get('since');
+      sendJson(response, 200, db.getListSnapshot(listName, since));
+      return;
+    }
+
+    if (method !== 'POST' || listRoute.action === null) {
+      sendJson(response, 405, { ok: false, error: 'Method not allowed' });
+      return;
+    }
+
+    const payload = await readJsonBody(request);
+    const { item, qty, note } = parseItemPayload(payload);
+
+    /** @type {unknown} */
+    let mutation;
+
+    switch (listRoute.action) {
+      case 'add':
+        mutation = db.addItem(listName, item, qty ?? 1, note);
+        break;
+      case 'bought':
+        mutation = db.markBought(listName, item);
+        break;
+      case 'remove':
+        mutation = db.removeItem(listName, item, qty);
+        break;
+      case 'note':
+        mutation = db.setItemNote(listName, item, note);
+        break;
+      default:
+        sendJson(response, 404, { ok: false, error: 'Route not found' });
+        return;
+    }
+
+    sendJson(response, 200, {
+      ok: true,
+      mutation,
+      snapshot: db.getListSnapshot(listName)
+    });
+    return;
+  }
+
+  const asset = resolveStaticAsset(url.pathname);
+  if (asset === null) {
+    sendJson(response, 404, { ok: false, error: 'Route not found' });
+    return;
+  }
+
+  const filePath = path.join(publicDir, asset.filePath);
+  const body = await readFile(filePath);
+  response.writeHead(200, {
+    'content-type': asset.contentType,
+    'cache-control': 'no-store',
+    'content-length': body.byteLength
+  });
+  response.end(body);
+}
+
+/**
+ * @param {ServerOptions} [options]
+ * @returns {import('node:http').Server}
+ */
+export function createAppServer(options = {}) {
+  const db = new ShoppingListDb(options.dbPath ?? DEFAULT_DB_PATH);
+  const publicDir = options.publicDir ?? DEFAULT_PUBLIC_DIR;
+
+  const server = createServer((request, response) => {
+    handleRequest(request, response, db, publicDir).catch((error) => {
+      const message = error instanceof Error ? error.message : 'Unexpected error';
+      const statusCode = message === 'Request body is too large' ? 413 : 400;
+      sendJson(response, statusCode, {
+        ok: false,
+        error: message
+      });
+    });
+  });
+
+  server.on('close', () => {
+    db.close();
+  });
+
+  return server;
+}
+
+const currentFilePath = fileURLToPath(import.meta.url);
+
+if (process.argv[1] && path.resolve(process.argv[1]) === currentFilePath) {
+  const server = createAppServer();
+  server.listen(DEFAULT_PORT, DEFAULT_HOST, () => {
+    console.log(`Shopping list app listening on http://${DEFAULT_HOST}:${DEFAULT_PORT}`);
+  });
+}

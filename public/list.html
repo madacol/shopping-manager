@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>Lista de compras</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <div class="topbar">
+        <div>
+          <a class="back-link" href="/">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+            <h1 id="page-title">Lista</h1>
+          </a>
+          <span class="status" id="sync-status">Sincronizando...</span>
+        </div>
+      </div>
+
+      <form id="add-form" class="add-bar">
+        <input id="item-name" name="item" type="text" autocomplete="off" placeholder="Agregar producto..." required>
+        <input id="item-qty" name="qty" type="number" inputmode="decimal" min="0.1" step="0.1" value="1" class="qty-input" required>
+        <button type="submit">+</button>
+      </form>
+
+      <div class="progress-track">
+        <div id="progress-fill" class="progress-fill" style="width:0%"></div>
+      </div>
+
+      <div id="pending-section">
+        <p class="section-label section-label--pending section-toggle" data-target="pending-items">
+          Pendientes <span id="pending-count" class="badge">0</span>
+        </p>
+        <ul id="pending-items" class="item-list"></ul>
+      </div>
+
+      <div id="activity-section">
+        <p class="section-label section-label--activity section-toggle" data-target="activity-items">
+          Actividad reciente <span id="activity-count" class="badge">0</span>
+        </p>
+        <ul id="activity-items" class="item-list"></ul>
+      </div>
+    </main>
+    <script type="module" src="/list.js"></script>
+  </body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "subdomain": "shop",
+  "proxy": {
+    "target": "127.0.0.1:3000"
+  },
+  "service": {
+    "command": ["/home/mada/.nvm/versions/node/v24.2.0/bin/node", "src/server.js"],
+    "environment": {
+      "PORT": "3000"
+    }
+  }
+}

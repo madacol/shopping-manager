@@ -1,0 +1,361 @@
+// @ts-check
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+
+import { main as cliMain } from '../src/cli.js';
+import { createAppServer } from '../src/server.js';
+import { ShoppingListDb } from '../src/shopping-list-db.js';
+
+/**
+ * @returns {string}
+ */
+function createDbPath() {
+  return path.join(os.tmpdir(), `shopping-list-${Date.now()}-${Math.random()}.sqlite`);
+}
+
+/**
+ * @param {string[]} args
+ * @returns {void}
+ */
+function runCli(args) {
+  const originalLog = console.log;
+  console.log = () => {};
+
+  try {
+    cliMain(args);
+  } finally {
+    console.log = originalLog;
+  }
+}
+
+/**
+ * @param {string} dbPath
+ * @returns {Promise<{ server: import('node:http').Server, baseUrl: string }>}
+ */
+async function startServer(dbPath) {
+  const server = createAppServer({
+    dbPath,
+    publicDir: path.resolve('public')
+  });
+
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+
+  if (address === null || typeof address === 'string') {
+    throw new Error('Failed to determine server address');
+  }
+
+  return {
+    server,
+    baseUrl: `http://127.0.0.1:${address.port}`
+  };
+}
+
+/**
+ * @param {Response} response
+ * @returns {Promise<any>}
+ */
+async function readResponseJson(response) {
+  return response.json();
+}
+
+test('aliases resolve to canonical items and writes create events', () => {
+  const dbPath = createDbPath();
+  const db = new ShoppingListDb(dbPath);
+
+  try {
+    db.addAlias('coke', 'coca cola');
+
+    const addResult = db.addItem('supermercado', 'coke', 2);
+    assert.equal(addResult.item, 'coca cola');
+    assert.equal(addResult.qty, 2);
+    assert.equal(addResult.status, 'pending');
+
+    const boughtResult = db.markBought('supermercado', 'coke');
+    assert.equal(boughtResult.item, 'coca cola');
+    assert.equal(boughtResult.status, 'bought');
+
+    const pendingList = db.showList('supermercado');
+    assert.equal(pendingList.items.length, 0);
+
+    const boughtList = db.showList('supermercado', 'bought');
+    assert.equal(boughtList.items.length, 1);
+    assert.equal(boughtList.items[0]?.name, 'coca cola');
+
+    const events = db.showEvents(10);
+    assert.equal(events.events.length, 2);
+    assert.equal(events.events[0]?.action, 'mark_bought');
+    assert.equal(events.events[1]?.action, 'add_item');
+  } finally {
+    db.close();
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('item notes persist on add and can be updated later', () => {
+  const dbPath = createDbPath();
+  const db = new ShoppingListDb(dbPath);
+
+  try {
+    const addResult = db.addItem('supermercado', 'mantequilla', 1, 'pidió Rosalba');
+    assert.equal(addResult.note, 'pidió Rosalba');
+
+    const updateResult = db.setItemNote('supermercado', 'mantequilla', 'Rosalba pidió añadir cosas extra');
+    assert.equal(updateResult.note, 'Rosalba pidió añadir cosas extra');
+
+    const pendingList = db.showList('supermercado');
+    assert.deepEqual(
+      pendingList.items.map((item) => ({ name: item.name, note: item.note })),
+      [{ name: 'mantequilla', note: 'Rosalba pidió añadir cosas extra' }]
+    );
+
+    const snapshot = db.getListSnapshot('supermercado');
+    assert.equal(
+      snapshot.items?.find((item) => item.name === 'mantequilla')?.note,
+      'Rosalba pidió añadir cosas extra'
+    );
+
+    const events = db.showEvents(5);
+    assert.equal(events.events[0]?.action, 'set_note');
+    assert.equal(events.events[1]?.action, 'add_item');
+  } finally {
+    db.close();
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('cli add-item accepts multiple items with the list first', () => {
+  const dbPath = createDbPath();
+  process.env.SHOPPING_LIST_DB = dbPath;
+
+  try {
+    runCli(['add-item', 'dunnes', 'azúcar morena=2', 'lemsip']);
+
+    const db = new ShoppingListDb(dbPath);
+    try {
+      const pendingList = db.showList('dunnes');
+      assert.deepEqual(
+        pendingList.items.map((item) => ({ name: item.name, qty: item.qty })),
+        [
+          { name: 'azúcar morena', qty: 2 },
+          { name: 'lemsip', qty: 1 }
+        ]
+      );
+    } finally {
+      db.close();
+    }
+  } finally {
+    delete process.env.SHOPPING_LIST_DB;
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('cli mark-bought and remove-item accept multiple items with the list first', () => {
+  const dbPath = createDbPath();
+  process.env.SHOPPING_LIST_DB = dbPath;
+
+  try {
+    const db = new ShoppingListDb(dbPath);
+    try {
+      db.addItem('supermercado', 'rice cakes', 1);
+      db.addItem('supermercado', 'lemsip', 1);
+      db.addItem('supermercado', 'mantequilla de maní', 1);
+    } finally {
+      db.close();
+    }
+
+    runCli(['mark-bought', 'supermercado', 'rice cakes', 'lemsip']);
+    runCli(['remove-item', 'supermercado', 'mantequilla de maní']);
+
+    const updatedDb = new ShoppingListDb(dbPath);
+    try {
+      assert.deepEqual(
+        updatedDb.showList('supermercado').items.map((item) => item.name),
+        []
+      );
+      assert.deepEqual(
+        updatedDb.showList('supermercado', 'bought').items.map((item) => item.name),
+        ['lemsip', 'rice cakes']
+      );
+      assert.deepEqual(
+        updatedDb.showList('supermercado', 'removed').items.map((item) => item.name),
+        ['mantequilla de maní']
+      );
+    } finally {
+      updatedDb.close();
+    }
+  } finally {
+    delete process.env.SHOPPING_LIST_DB;
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('cli remove-item can subtract a specific quantity', () => {
+  const dbPath = createDbPath();
+  process.env.SHOPPING_LIST_DB = dbPath;
+
+  try {
+    const db = new ShoppingListDb(dbPath);
+    try {
+      db.addItem('supermercado', 'azúcar morena', 5);
+    } finally {
+      db.close();
+    }
+
+    runCli(['remove-item', 'supermercado', 'azúcar morena=2']);
+
+    const updatedDb = new ShoppingListDb(dbPath);
+    try {
+      assert.deepEqual(
+        updatedDb.showList('supermercado').items.map((item) => ({ name: item.name, qty: item.qty })),
+        [{ name: 'azúcar morena', qty: 3 }]
+      );
+      assert.equal(updatedDb.showList('supermercado', 'removed').items.length, 0);
+    } finally {
+      updatedDb.close();
+    }
+  } finally {
+    delete process.env.SHOPPING_LIST_DB;
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('cli still allows adding a single item to the default list', () => {
+  const dbPath = createDbPath();
+  process.env.SHOPPING_LIST_DB = dbPath;
+  process.env.SHOPPING_LIST_DEFAULT_LIST = 'despensa';
+
+  try {
+    runCli(['add-item', 'pan']);
+
+    const db = new ShoppingListDb(dbPath);
+    try {
+      const pendingList = db.showList('despensa');
+      assert.deepEqual(
+        pendingList.items.map((item) => ({ name: item.name, qty: item.qty })),
+        [{ name: 'pan', qty: 1 }]
+      );
+    } finally {
+      db.close();
+    }
+  } finally {
+    delete process.env.SHOPPING_LIST_DB;
+    delete process.env.SHOPPING_LIST_DEFAULT_LIST;
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('http api serves snapshots and mutations with version-aware polling', async () => {
+  const dbPath = createDbPath();
+  const db = new ShoppingListDb(dbPath);
+
+  try {
+    db.addItem('supermercado', 'rice cakes', 2);
+    db.addItem('supermercado', 'lemsip', 1, 'solo manzanilla');
+  } finally {
+    db.close();
+  }
+
+  const { server, baseUrl } = await startServer(dbPath);
+
+  try {
+    const listsResponse = await fetch(`${baseUrl}/api/lists`);
+    const listsPayload = await readResponseJson(listsResponse);
+    assert.deepEqual(listsPayload.lists, ['supermercado']);
+
+    const snapshotResponse = await fetch(`${baseUrl}/api/lists/supermercado`);
+    const snapshot = await readResponseJson(snapshotResponse);
+    assert.equal(snapshot.changed, true);
+    assert.equal(snapshot.items.length, 2);
+    assert.equal(snapshot.version, 2);
+    assert.equal(
+      snapshot.items.find(
+        /** @param {{ name: string, note?: string | null }} item */
+        (item) => item.name === 'lemsip'
+      )?.note,
+      'solo manzanilla'
+    );
+
+    const unchangedResponse = await fetch(
+      `${baseUrl}/api/lists/supermercado?since=${snapshot.version}`
+    );
+    const unchangedSnapshot = await readResponseJson(unchangedResponse);
+    assert.equal(unchangedSnapshot.changed, false);
+    assert.equal(unchangedSnapshot.version, 2);
+
+    const boughtResponse = await fetch(`${baseUrl}/api/lists/supermercado/bought`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ item: 'rice cakes' })
+    });
+    const boughtPayload = await readResponseJson(boughtResponse);
+    assert.equal(boughtPayload.snapshot.version, 3);
+    assert.equal(
+      boughtPayload.snapshot.items.find(
+        /** @param {{ name: string, status: string }} item */
+        (item) => item.name === 'rice cakes'
+      )?.status,
+      'bought'
+    );
+
+    const addWithNoteResponse = await fetch(`${baseUrl}/api/lists/supermercado/add`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ item: 'mantequilla', qty: 1, note: 'pidió Rosalba' })
+    });
+    const addWithNotePayload = await readResponseJson(addWithNoteResponse);
+    assert.equal(addWithNotePayload.snapshot.version, 4);
+    assert.equal(
+      addWithNotePayload.snapshot.items.find(
+        /** @param {{ name: string, note?: string | null }} item */
+        (item) => item.name === 'mantequilla'
+      )?.note,
+      'pidió Rosalba'
+    );
+
+    const noteResponse = await fetch(`${baseUrl}/api/lists/supermercado/note`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        item: 'mantequilla',
+        note: 'Rosalba pidió añadir cosas extra o notas a la lista.'
+      })
+    });
+    const notePayload = await readResponseJson(noteResponse);
+    assert.equal(notePayload.snapshot.version, 5);
+    assert.equal(
+      notePayload.snapshot.items.find(
+        /** @param {{ name: string, note?: string | null }} item */
+        (item) => item.name === 'mantequilla'
+      )?.note,
+      'Rosalba pidió añadir cosas extra o notas a la lista.'
+    );
+
+    const rootResponse = await fetch(`${baseUrl}/`);
+    const rootHtml = await rootResponse.text();
+    assert.match(rootHtml, /Listas de compras/);
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(undefined);
+      });
+    });
+    fs.rmSync(dbPath, { force: true });
+  }
+});

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shopping List Chat"
+  short_description: "SQLite shopping list for this chat"
+  default_prompt: "Use $shopping-list-chat to manage this chat SQLite shopping list."
