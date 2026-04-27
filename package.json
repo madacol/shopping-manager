@@ -7,9 +7,11 @@
     "start": "node src/server.js",
     "cli": "node src/cli.js",
     "test": "node --test",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test:e2e:prod": "playwright test e2e/prod-edit-route.spec.js"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@types/node": "^25.6.0"
   }
 }

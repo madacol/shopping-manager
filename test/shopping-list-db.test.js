@@ -130,6 +130,52 @@ test('item notes persist on add and can be updated later', () => {
   }
 });
 
+test('items can be reactivated and edited through the db api', () => {
+  const dbPath = createDbPath();
+  const db = new ShoppingListDb(dbPath);
+
+  try {
+    db.addItem('supermercado', 'mantequilla', 1, 'sin sal');
+    db.markBought('supermercado', 'mantequilla');
+
+    const pendingResult = db.markPending('supermercado', 'mantequilla');
+    assert.equal(pendingResult.status, 'pending');
+
+    const editResult = db.editItem(
+      'supermercado',
+      'mantequilla',
+      'mantequilla de maní',
+      2,
+      'gruesa'
+    );
+    assert.equal(editResult.item, 'mantequilla de maní');
+    assert.equal(editResult.qty, 2);
+    assert.equal(editResult.note, 'gruesa');
+
+    const noteOnlyResult = db.editItem('supermercado', 'mantequilla de maní', undefined, undefined, 'cremosa');
+    assert.equal(noteOnlyResult.item, 'mantequilla de maní');
+    assert.equal(noteOnlyResult.qty, 2);
+    assert.equal(noteOnlyResult.note, 'cremosa');
+
+    assert.deepEqual(
+      db.showList('supermercado').items.map((item) => ({
+        name: item.name,
+        qty: item.qty,
+        note: item.note
+      })),
+      [{ name: 'mantequilla de maní', qty: 2, note: 'cremosa' }]
+    );
+
+    const events = db.showEvents(5);
+    assert.equal(events.events[0]?.action, 'edit_item');
+    assert.equal(events.events[1]?.action, 'edit_item');
+    assert.equal(events.events[2]?.action, 'mark_pending');
+  } finally {
+    db.close();
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
 test('cli add-item accepts multiple items with the list first', () => {
   const dbPath = createDbPath();
   process.env.SHOPPING_LIST_DB = dbPath;
@@ -187,6 +233,40 @@ test('cli mark-bought and remove-item accept multiple items with the list first'
         updatedDb.showList('supermercado', 'removed').items.map((item) => item.name),
         ['mantequilla de maní']
       );
+    } finally {
+      updatedDb.close();
+    }
+  } finally {
+    delete process.env.SHOPPING_LIST_DB;
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('cli mark-pending can reactivate multiple items with the list first', () => {
+  const dbPath = createDbPath();
+  process.env.SHOPPING_LIST_DB = dbPath;
+
+  try {
+    const db = new ShoppingListDb(dbPath);
+    try {
+      db.addItem('supermercado', 'rice cakes', 1);
+      db.addItem('supermercado', 'lemsip', 1);
+      db.markBought('supermercado', 'rice cakes');
+      db.removeItem('supermercado', 'lemsip');
+    } finally {
+      db.close();
+    }
+
+    runCli(['mark-pending', 'supermercado', 'rice cakes', 'lemsip']);
+
+    const updatedDb = new ShoppingListDb(dbPath);
+    try {
+      assert.deepEqual(
+        updatedDb.showList('supermercado').items.map((item) => item.name),
+        ['lemsip', 'rice cakes']
+      );
+      assert.equal(updatedDb.showList('supermercado', 'bought').items.length, 0);
+      assert.equal(updatedDb.showList('supermercado', 'removed').items.length, 0);
     } finally {
       updatedDb.close();
     }
@@ -323,13 +403,13 @@ test('http api serves snapshots and mutations with version-aware polling', async
       'pidió Rosalba'
     );
 
-    const noteResponse = await fetch(`${baseUrl}/api/lists/supermercado/note`, {
+    const noteResponse = await fetch(`${baseUrl}/api/lists/supermercado/edit`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json'
       },
       body: JSON.stringify({
-        item: 'mantequilla',
+        currentItem: 'mantequilla',
         note: 'Rosalba pidió añadir cosas extra o notas a la lista.'
       })
     });
@@ -342,6 +422,57 @@ test('http api serves snapshots and mutations with version-aware polling', async
       )?.note,
       'Rosalba pidió añadir cosas extra o notas a la lista.'
     );
+
+    const pendingResponse = await fetch(`${baseUrl}/api/lists/supermercado/pending`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ item: 'rice cakes' })
+    });
+    const pendingPayload = await readResponseJson(pendingResponse);
+    assert.equal(pendingPayload.snapshot.version, 6);
+    assert.equal(
+      pendingPayload.snapshot.items.find(
+        /** @param {{ name: string, status: string }} item */
+        (item) => item.name === 'rice cakes'
+      )?.status,
+      'pending'
+    );
+
+    const editResponse = await fetch(`${baseUrl}/api/lists/supermercado/edit`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        currentItem: 'mantequilla',
+        note: 'Rosalba pidió añadir marca y tamaño.'
+      })
+    });
+    const editPayload = await readResponseJson(editResponse);
+    assert.equal(editPayload.snapshot.version, 7);
+    assert.equal(
+      editPayload.snapshot.items.find(
+        /** @param {{ name: string, note?: string | null }} item */
+        (item) => item.name === 'mantequilla'
+      )?.note,
+      'Rosalba pidió añadir marca y tamaño.'
+    );
+
+    const deprecatedNoteRouteResponse = await fetch(`${baseUrl}/api/lists/supermercado/note`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        item: 'mantequilla',
+        note: 'esto no deberia existir'
+      })
+    });
+    const deprecatedNoteRoutePayload = await readResponseJson(deprecatedNoteRouteResponse);
+    assert.equal(deprecatedNoteRouteResponse.status, 404);
+    assert.equal(deprecatedNoteRoutePayload.error, 'Route not found');
 
     const rootResponse = await fetch(`${baseUrl}/`);
     const rootHtml = await rootResponse.text();

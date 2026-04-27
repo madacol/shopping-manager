@@ -74,8 +74,10 @@ import { DatabaseSync } from 'node:sqlite';
  * @property {StatementSync} upsertItem
  * @property {StatementSync} getItemByCanonicalName
  * @property {StatementSync} setItemNote
+ * @property {StatementSync} updateItemById
  * @property {StatementSync} insertEvent
  * @property {StatementSync} markBought
+ * @property {StatementSync} markPending
  * @property {StatementSync} markRemoved
  * @property {StatementSync} updateItemQtyAndStatus
  * @property {StatementSync} showAllItems
@@ -367,6 +369,51 @@ export class ShoppingListDb {
   /**
    * @param {string} listName
    * @param {string} rawItem
+   * @returns {ItemMutationResult}
+   */
+  markPending(listName, rawItem) {
+    const normalizedListName = this.#normalizeListName(listName);
+
+    return this.#transaction(() => {
+      const list = this.createList(normalizedListName);
+      const canonicalName = this.resolveCanonicalName(rawItem).toLowerCase();
+      const result = /** @type {SqliteRunResult} */ (this.statements.markPending.run(list.id, canonicalName));
+
+      if (result.changes === 0) {
+        throw new Error(`Item not found: ${canonicalName}`);
+      }
+
+      const item = /** @type {ItemRow} */ (
+        assertDefined(
+          this.statements.getItemByCanonicalName.get(list.id, canonicalName),
+          `Item not found after mark_pending: ${canonicalName}`
+        )
+      );
+
+      this.statements.insertEvent.run(
+        list.id,
+        item.id,
+        'mark_pending',
+        JSON.stringify({
+          rawItem: this.#normalizeItemName(rawItem),
+          canonicalName
+        })
+      );
+
+      return {
+        ok: true,
+        list: list.name,
+        item: canonicalName,
+        qty: item.qty,
+        status: item.status,
+        note: item.note
+      };
+    });
+  }
+
+  /**
+   * @param {string} listName
+   * @param {string} rawItem
    * @param {number | string} [qty]
    * @returns {ItemMutationResult}
    */
@@ -420,6 +467,75 @@ export class ShoppingListDb {
         qty: remainingQty,
         status: nextStatus,
         note: item.note
+      };
+    });
+  }
+
+  /**
+   * @param {string} listName
+   * @param {string} currentRawItem
+   * @param {string | undefined} rawNextItem
+   * @param {number | string | undefined} qty
+   * @param {string | null | undefined} note
+   * @returns {ItemMutationResult}
+   */
+  editItem(listName, currentRawItem, rawNextItem, qty, note) {
+    const normalizedListName = this.#normalizeListName(listName);
+    const normalizedNote = note === undefined ? undefined : this.#normalizeOptionalNote(note);
+
+    return this.#transaction(() => {
+      const list = this.createList(normalizedListName);
+      const currentCanonicalName = this.resolveCanonicalName(currentRawItem).toLowerCase();
+      const item = /** @type {ItemRow | undefined} */ (
+        this.statements.getItemByCanonicalName.get(list.id, currentCanonicalName)
+      );
+
+      if (item === undefined) {
+        throw new Error(`Item not found: ${currentCanonicalName}`);
+      }
+
+      const nextCanonicalName =
+        rawNextItem === undefined
+          ? item.canonical_name
+          : this.resolveCanonicalName(rawNextItem).toLowerCase();
+      const nextQty = qty === undefined ? item.qty : Number(qty);
+
+      if (!Number.isFinite(nextQty) || nextQty <= 0) {
+        throw new Error('Quantity must be a positive number');
+      }
+
+      const nextNote = normalizedNote === undefined ? item.note : normalizedNote;
+
+      this.statements.updateItemById.run(nextCanonicalName, nextQty, nextNote, item.id);
+
+      const updatedItem = /** @type {ItemRow} */ (
+        assertDefined(
+          this.statements.getItemByCanonicalName.get(list.id, nextCanonicalName),
+          `Item not found after edit_item: ${nextCanonicalName}`
+        )
+      );
+
+      this.statements.insertEvent.run(
+        list.id,
+        updatedItem.id,
+        'edit_item',
+        JSON.stringify({
+          rawItem: this.#normalizeItemName(currentRawItem),
+          canonicalName: currentCanonicalName,
+          nextRawItem: rawNextItem === undefined ? undefined : this.#normalizeItemName(rawNextItem),
+          nextCanonicalName,
+          qty: nextQty,
+          note: nextNote
+        })
+      );
+
+      return {
+        ok: true,
+        list: list.name,
+        item: updatedItem.canonical_name,
+        qty: updatedItem.qty,
+        status: updatedItem.status,
+        note: updatedItem.note
       };
     });
   }
@@ -584,6 +700,14 @@ export class ShoppingListDb {
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `),
+      updateItemById: this.db.prepare(`
+        UPDATE items
+        SET canonical_name = ?,
+            qty = ?,
+            note = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `),
       insertEvent: this.db.prepare(`
         INSERT INTO events(list_id, item_id, action, payload_json)
         VALUES (?, ?, ?, ?)
@@ -591,6 +715,12 @@ export class ShoppingListDb {
       markBought: this.db.prepare(`
         UPDATE items
         SET status = 'bought',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE list_id = ? AND canonical_name = ?
+      `),
+      markPending: this.db.prepare(`
+        UPDATE items
+        SET status = 'pending',
             updated_at = CURRENT_TIMESTAMP
         WHERE list_id = ? AND canonical_name = ?
       `),

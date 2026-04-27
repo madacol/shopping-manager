@@ -19,6 +19,7 @@ function printUsage() {
   node src/cli.js add-alias <alias> <canonical-name>
   node src/cli.js add-item [list] <item[=qty]> [more-items...]
   node src/cli.js mark-bought [list] <item> [more-items...]
+  node src/cli.js mark-pending [list] <item> [more-items...]
   node src/cli.js remove-item [list] <item[=qty]> [more-items...]
   node src/cli.js show-list [list] [status]
   node src/cli.js show-events [limit]`);
@@ -130,6 +131,14 @@ export function main(argv) {
         result = formatBatchResult(
           list,
           itemArgs.map((item) => db.markBought(list, item))
+        );
+        break;
+      }
+      case 'mark-pending': {
+        const { list, itemArgs } = parseListAndItems(args);
+        result = formatBatchResult(
+          list,
+          itemArgs.map((item) => db.markPending(list, item))
         );
         break;
       }

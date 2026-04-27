@@ -1,5 +1,6 @@
 const syncStatus = document.querySelector('#sync-status');
 const listDirectory = document.querySelector('#list-directory');
+const apiListsUrl = new URL('./api/lists', location.href);
 
 async function readJson(response) {
   const data = await response.json();
@@ -21,7 +22,7 @@ function renderDirectory(lists) {
   for (const name of lists) {
     const li = document.createElement('li');
     const a = document.createElement('a');
-    a.href = `/list.html?list=${encodeURIComponent(name)}`;
+    a.href = `./list.html?list=${encodeURIComponent(name)}`;
     a.textContent = name;
 
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -41,7 +42,7 @@ function renderDirectory(lists) {
 
 async function init() {
   try {
-    const data = await readJson(await fetch('/api/lists'));
+    const data = await readJson(await fetch(apiListsUrl));
     renderDirectory(data.lists);
     syncStatus.textContent = `${data.lists.length} lista${data.lists.length === 1 ? '' : 's'}`;
   } catch (e) {

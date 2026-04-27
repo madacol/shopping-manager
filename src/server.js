@@ -118,6 +118,56 @@ function parseItemPayload(payload) {
 }
 
 /**
+ * @param {Record<string, unknown>} payload
+ * @returns {{ currentItem: string, item: string | undefined, qty: number | undefined, note: string | undefined }}
+ */
+function parseEditPayload(payload) {
+  if (typeof payload.currentItem !== 'string' || payload.currentItem.trim() === '') {
+    throw new Error('Current item is required');
+  }
+
+  const item =
+    payload.item === undefined
+      ? undefined
+      : typeof payload.item === 'string' && payload.item.trim() !== ''
+        ? payload.item
+        : (() => {
+            throw new Error('Item must be a non-empty string');
+          })();
+
+  const note =
+    payload.note === undefined
+      ? undefined
+      : typeof payload.note === 'string'
+        ? payload.note
+        : (() => {
+            throw new Error('Note must be a string');
+          })();
+
+  if (payload.qty === undefined) {
+    return {
+      currentItem: payload.currentItem,
+      item,
+      qty: undefined,
+      note
+    };
+  }
+
+  const qty = Number(payload.qty);
+
+  if (!Number.isFinite(qty) || qty <= 0) {
+    throw new Error('Quantity must be a positive number');
+  }
+
+  return {
+    currentItem: payload.currentItem,
+    item,
+    qty,
+    note
+  };
+}
+
+/**
  * @param {string} pathname
  * @returns {{ listName: string, action: string | null } | null}
  */
@@ -190,24 +240,36 @@ async function handleRequest(request, response, db, publicDir) {
     }
 
     const payload = await readJsonBody(request);
-    const { item, qty, note } = parseItemPayload(payload);
 
     /** @type {unknown} */
     let mutation;
 
     switch (listRoute.action) {
-      case 'add':
+      case 'add': {
+        const { item, qty, note } = parseItemPayload(payload);
         mutation = db.addItem(listName, item, qty ?? 1, note);
         break;
-      case 'bought':
+      }
+      case 'bought': {
+        const { item } = parseItemPayload(payload);
         mutation = db.markBought(listName, item);
         break;
-      case 'remove':
+      }
+      case 'pending': {
+        const { item } = parseItemPayload(payload);
+        mutation = db.markPending(listName, item);
+        break;
+      }
+      case 'remove': {
+        const { item, qty } = parseItemPayload(payload);
         mutation = db.removeItem(listName, item, qty);
         break;
-      case 'note':
-        mutation = db.setItemNote(listName, item, note);
+      }
+      case 'edit': {
+        const { currentItem, item, qty, note } = parseEditPayload(payload);
+        mutation = db.editItem(listName, currentItem, item, qty, note);
         break;
+      }
       default:
         sendJson(response, 404, { ok: false, error: 'Route not found' });
         return;
