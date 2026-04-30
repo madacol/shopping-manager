@@ -18,6 +18,7 @@ import path from 'node:path';
  * @property {number} id
  * @property {number} item_id
  * @property {string} ordered_by
+ * @property {'pending' | 'bought' | 'removed'} status
  * @property {number} qty
  * @property {string | null} image_ref
  * @property {string | null} note
@@ -73,6 +74,9 @@ import path from 'node:path';
  * @property {StatementSync} ensureItem
  * @property {StatementSync} getItem
  * @property {StatementSync} upsertOrder
+ * @property {StatementSync} getActiveOrder
+ * @property {StatementSync} insertOrder
+ * @property {StatementSync} addToOrder
  * @property {StatementSync} annotateOrder
  * @property {StatementSync} getOrdersForItem
  * @property {StatementSync} insertOrderMedia
@@ -83,6 +87,7 @@ import path from 'node:path';
  * @property {StatementSync} markPending
  * @property {StatementSync} markBought
  * @property {StatementSync} markRemoved
+ * @property {StatementSync} setOrdersStatus
  * @property {StatementSync} showList
  * @property {StatementSync} showLists
  * @property {StatementSync} upsertItemAlias
@@ -122,6 +127,8 @@ class ShoppingListDb {
     this.#ensureItemColumn('ordered_by', 'TEXT');
     this.#ensureItemColumn('image_ref', 'TEXT');
     this.#ensureOrderColumn('note', 'TEXT');
+    this.#ensureOrderStatusColumn();
+    this.#migrateOrderUniquenessForStatus();
     this.statements = this.#prepareStatements();
     this.#migrateSchema();
   }
@@ -224,7 +231,14 @@ class ShoppingListDb {
         )
       );
 
-      this.statements.upsertOrder.run(itemBeforeSync.id, orderedBy, parsedQty, imageRef, note);
+      const activeOrder = /** @type {OrderRow | undefined} */ (
+        this.statements.getActiveOrder.get(itemBeforeSync.id, orderedBy)
+      );
+      if (activeOrder === undefined) {
+        this.statements.insertOrder.run(itemBeforeSync.id, orderedBy, parsedQty, imageRef, note);
+      } else {
+        this.statements.addToOrder.run(parsedQty, imageRef, note, activeOrder.id);
+      }
       this.#attachOrderMedia(itemBeforeSync.id, orderedBy, imageRef);
       this.statements.syncItemQty.run(itemBeforeSync.id, itemBeforeSync.id);
 
@@ -349,6 +363,9 @@ class ShoppingListDb {
           `Item not found after mark-pending: ${canonicalItem}`
         )
       );
+      this.statements.setOrdersStatus.run('pending', item.id, 'bought');
+      this.statements.setOrdersStatus.run('pending', item.id, 'removed');
+      this.statements.syncItemQty.run(item.id, item.id);
       const orders = this.#getOrdersForItem(item.id);
 
       this.statements.insertEvent.run(
@@ -392,6 +409,8 @@ class ShoppingListDb {
           `Item not found after mark-bought: ${canonicalItem}`
         )
       );
+      this.statements.setOrdersStatus.run('bought', item.id, 'pending');
+      this.statements.syncItemQty.run(item.id, item.id);
       const orders = this.#getOrdersForItem(item.id);
 
       this.statements.insertEvent.run(
@@ -435,6 +454,8 @@ class ShoppingListDb {
           `Item not found after remove: ${canonicalItem}`
         )
       );
+      this.statements.setOrdersStatus.run('removed', item.id, 'pending');
+      this.statements.syncItemQty.run(item.id, item.id);
       const orders = this.#getOrdersForItem(item.id);
 
       this.statements.insertEvent.run(
@@ -535,12 +556,12 @@ class ShoppingListDb {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         item_id INTEGER NOT NULL,
         ordered_by TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
         qty REAL NOT NULL DEFAULT 0,
         image_ref TEXT,
         note TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(item_id, ordered_by),
         FOREIGN KEY (item_id) REFERENCES items(id)
       );
 
@@ -600,6 +621,83 @@ class ShoppingListDb {
     }
   }
 
+  #ensureOrderStatusColumn() {
+    const columns = /** @type {Array<{ name: string }>} */ (
+      this.db.prepare('PRAGMA table_info(item_orders)').all()
+    );
+    const exists = columns.some((column) => column.name === 'status');
+    if (exists) {
+      return;
+    }
+
+    this.db.exec("ALTER TABLE item_orders ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'");
+    this.db.exec(`
+      UPDATE item_orders
+      SET status = COALESCE((
+        SELECT items.status
+        FROM items
+        WHERE items.id = item_orders.item_id
+      ), 'pending')
+    `);
+  }
+
+  #migrateOrderUniquenessForStatus() {
+    if (!this.#hasLegacyOrderUniqueness()) {
+      return;
+    }
+
+    this.db.exec(`
+      PRAGMA foreign_keys = OFF;
+      BEGIN;
+
+      CREATE TABLE item_orders_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_id INTEGER NOT NULL,
+        ordered_by TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        qty REAL NOT NULL DEFAULT 0,
+        image_ref TEXT,
+        note TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (item_id) REFERENCES items(id)
+      );
+
+      INSERT INTO item_orders_new(id, item_id, ordered_by, status, qty, image_ref, note, created_at, updated_at)
+      SELECT id, item_id, ordered_by, status, qty, image_ref, note, created_at, updated_at
+      FROM item_orders;
+
+      DROP TABLE item_orders;
+      ALTER TABLE item_orders_new RENAME TO item_orders;
+
+      COMMIT;
+      PRAGMA foreign_keys = ON;
+    `);
+  }
+
+  #hasLegacyOrderUniqueness() {
+    const indexes = /** @type {Array<{ name: string, unique: number }>} */ (
+      this.db.prepare('PRAGMA index_list(item_orders)').all()
+    );
+
+    for (const index of indexes) {
+      if (index.unique !== 1) {
+        continue;
+      }
+
+      const escapedName = index.name.replace(/"/g, '""');
+      const columns = /** @type {Array<{ name: string }>} */ (
+        this.db.prepare(`PRAGMA index_info("${escapedName}")`).all()
+      ).map((column) => column.name);
+
+      if (columns.length === 2 && columns[0] === 'item_id' && columns[1] === 'ordered_by') {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   /**
    * @returns {Statements}
    */
@@ -639,26 +737,42 @@ class ShoppingListDb {
         WHERE list_id = ? AND canonical_name = ?
       `),
       upsertOrder: this.db.prepare(`
-        INSERT INTO item_orders(item_id, ordered_by, qty, image_ref, note, updated_at)
-        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(item_id, ordered_by)
-        DO UPDATE SET
-          qty = item_orders.qty + excluded.qty,
-          image_ref = COALESCE(excluded.image_ref, item_orders.image_ref),
-          note = COALESCE(excluded.note, item_orders.note),
-          updated_at = CURRENT_TIMESTAMP
+        INSERT INTO item_orders(item_id, ordered_by, status, qty, image_ref, note, updated_at)
+        VALUES (?, ?, 'pending', ?, ?, ?, CURRENT_TIMESTAMP)
+      `),
+      getActiveOrder: this.db.prepare(`
+        SELECT id, item_id, ordered_by, status, qty, image_ref, note, created_at, updated_at
+        FROM item_orders
+        WHERE item_id = ?
+          AND ordered_by = ?
+          AND status = 'pending'
+        ORDER BY id DESC
+        LIMIT 1
+      `),
+      insertOrder: this.db.prepare(`
+        INSERT INTO item_orders(item_id, ordered_by, status, qty, image_ref, note, updated_at)
+        VALUES (?, ?, 'pending', ?, ?, ?, CURRENT_TIMESTAMP)
+      `),
+      addToOrder: this.db.prepare(`
+        UPDATE item_orders
+        SET qty = qty + ?,
+            image_ref = COALESCE(?, image_ref),
+            note = COALESCE(?, note),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
       `),
       annotateOrder: this.db.prepare(`
         UPDATE item_orders
         SET image_ref = COALESCE(?, image_ref),
             note = CASE WHEN ? THEN NULL ELSE COALESCE(?, note) END,
             updated_at = CURRENT_TIMESTAMP
-        WHERE item_id = ? AND ordered_by = ?
+        WHERE item_id = ? AND ordered_by = ? AND status = 'pending'
       `),
       getOrdersForItem: this.db.prepare(`
-        SELECT id, item_id, ordered_by, qty, image_ref, note, created_at, updated_at
+        SELECT id, item_id, ordered_by, status, qty, image_ref, note, created_at, updated_at
         FROM item_orders
         WHERE item_id = ?
+          AND status = (SELECT status FROM items WHERE items.id = item_orders.item_id)
         ORDER BY ordered_by
       `),
       insertOrderMedia: this.db.prepare(`
@@ -679,7 +793,7 @@ class ShoppingListDb {
       `),
       syncItemQty: this.db.prepare(`
         UPDATE items
-        SET qty = COALESCE((SELECT SUM(qty) FROM item_orders WHERE item_id = ?), 0),
+        SET qty = COALESCE((SELECT SUM(qty) FROM item_orders WHERE item_id = ? AND status = items.status), 0),
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `),
@@ -704,6 +818,14 @@ class ShoppingListDb {
         SET status = 'removed',
             updated_at = CURRENT_TIMESTAMP
         WHERE list_id = ? AND canonical_name = ?
+      `),
+      setOrdersStatus: this.db.prepare(`
+        UPDATE item_orders
+        SET status = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE item_id = ?
+          AND status = ?
+          AND qty > 0
       `),
       showList: this.db.prepare(`
         SELECT id, list_id, canonical_name, qty, status, created_at, updated_at
@@ -737,9 +859,10 @@ class ShoppingListDb {
         LIMIT ?
       `),
       backfillOrders: this.db.prepare(`
-        INSERT INTO item_orders(item_id, ordered_by, qty, image_ref, note)
+        INSERT INTO item_orders(item_id, ordered_by, status, qty, image_ref, note)
         SELECT items.id,
                'unknown',
+               items.status,
                items.qty,
                NULL,
                NULL
@@ -749,6 +872,7 @@ class ShoppingListDb {
             SELECT 1
             FROM item_orders
             WHERE item_orders.item_id = items.id
+              AND item_orders.status = items.status
           )
       `)
     };

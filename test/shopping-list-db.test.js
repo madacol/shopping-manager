@@ -719,3 +719,60 @@ test('skill cli writes media rows visible to an already-running web server', asy
     fs.rmSync(imagePath, { force: true });
   }
 });
+
+test('new pending order does not inherit media from an older bought order', async () => {
+  const dbPath = createDbPath();
+  const imagePath = path.join(os.tmpdir(), `shopping-old-order-image-${Date.now()}.jpg`);
+  fs.writeFileSync(imagePath, 'old-order-image');
+
+  runSkillCli(dbPath, [
+    'add-item',
+    'jugo de ciruelas',
+    '1',
+    'supermercado',
+    '--by',
+    'photo request',
+    '--image',
+    imagePath
+  ]);
+  runSkillCli(dbPath, ['mark-bought', 'jugo de ciruelas', 'supermercado']);
+  runSkillCli(dbPath, ['add-item', 'jugo de ciruelas', '1', 'supermercado']);
+
+  const { server, baseUrl } = await startServer(dbPath);
+
+  try {
+    const snapshotResponse = await fetch(`${baseUrl}/api/lists/supermercado`);
+    const snapshot = await readResponseJson(snapshotResponse);
+    const pending = snapshot.items.find(
+      /** @param {{ name: string, status: string, orders?: any[] }} item */
+      (item) => item.name === 'jugo de ciruelas' && item.status === 'pending'
+    );
+    const bought = snapshot.items.find(
+      /** @param {{ name: string, status: string, orders?: any[] }} item */
+      (item) => item.name === 'jugo de ciruelas' && item.status === 'bought'
+    );
+
+    assert.equal(pending?.qty, 1);
+    assert.deepEqual(
+      pending?.orders.map(
+        /** @param {{ media?: any[] }} order */
+        (order) => order.media?.length ?? 0
+      ),
+      [0]
+    );
+    assert.equal(bought?.qty, 1);
+    assert.equal(bought?.orders[0]?.media.length, 1);
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(undefined);
+      });
+    });
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(imagePath, { force: true });
+  }
+});

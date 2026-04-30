@@ -42,6 +42,7 @@ import { DatabaseSync } from 'node:sqlite';
  * @property {number} id
  * @property {number} item_id
  * @property {string} ordered_by
+ * @property {'pending' | 'bought' | 'removed'} status
  * @property {number} qty
  * @property {string | null} note
  * @property {string} created_at
@@ -133,8 +134,12 @@ import { DatabaseSync } from 'node:sqlite';
  * @property {StatementSync} upsertAlias
  * @property {StatementSync} showEvents
  * @property {StatementSync} upsertOrder
+ * @property {StatementSync} getActiveOrder
+ * @property {StatementSync} insertOrder
+ * @property {StatementSync} addToOrder
  * @property {StatementSync} setOrderQty
  * @property {StatementSync} setOrderNote
+ * @property {StatementSync} setOrdersStatus
  * @property {StatementSync} deleteOrder
  * @property {StatementSync} getOrdersForItem
  * @property {StatementSync} insertOrderMedia
@@ -219,6 +224,8 @@ export class ShoppingListDb {
     this.#ensureItemColumn('note', 'TEXT');
     this.#ensureOrderColumn('note', 'TEXT');
     this.#ensureOrderColumn('image_ref', 'TEXT');
+    this.#ensureOrderStatusColumn();
+    this.#migrateOrderUniquenessForStatus();
     this.#ensureMediaColumn('mime_type', 'TEXT');
     this.statements = this.#prepareStatements();
     this.#backfillOrders();
@@ -330,10 +337,17 @@ export class ShoppingListDb {
         }
       }
 
-      this.statements.upsertOrder.run(item.id, UNKNOWN_ORDERED_BY, parsedQty, normalizedNote);
+      const activeOrder = /** @type {OrderRow | undefined} */ (
+        this.statements.getActiveOrder.get(item.id, UNKNOWN_ORDERED_BY)
+      );
+      if (activeOrder === undefined) {
+        this.statements.insertOrder.run(item.id, UNKNOWN_ORDERED_BY, parsedQty, normalizedNote);
+      } else {
+        this.statements.addToOrder.run(parsedQty, normalizedNote, activeOrder.id);
+      }
       this.statements.touchItem.run(item.id);
 
-      const updated = this.#getItemView(item.id);
+      const updated = this.#getItemView(item.id, 'pending');
 
       this.statements.insertEvent.run(
         list.id,
@@ -372,7 +386,7 @@ export class ShoppingListDb {
       }
 
       const canonicalName = item.canonical_name;
-      const orders = this.#getOrdersForItem(item.id);
+      const orders = this.#getOrdersForItem(item.id, 'pending');
       const editableOrder = this.#getEditableOrder(orders, canonicalName, 'update note');
 
       if (normalizedNote === null && orders.length === 1) {
@@ -382,7 +396,7 @@ export class ShoppingListDb {
       }
 
       this.statements.touchItem.run(item.id);
-      const updated = this.#getItemView(item.id);
+      const updated = this.#getItemView(item.id, 'pending');
 
       this.statements.insertEvent.run(
         list.id,
@@ -437,7 +451,7 @@ export class ShoppingListDb {
       }
 
       const canonicalName = item.canonical_name;
-      const orders = this.#getOrdersForItem(item.id);
+      const orders = this.#getOrdersForItem(item.id, 'pending');
       const currentQty = sumOrderQty(orders);
       const parsedQty = qty === undefined ? currentQty : Number(qty);
 
@@ -449,6 +463,7 @@ export class ShoppingListDb {
       let remainingQty = currentQty;
 
       if (parsedQty >= currentQty) {
+        this.statements.setOrdersStatus.run('removed', item.id, 'pending');
         this.statements.markRemoved.run(item.id);
         qtyRemoved = currentQty;
         remainingQty = currentQty;
@@ -476,7 +491,7 @@ export class ShoppingListDb {
         this.statements.touchItem.run(item.id);
       }
 
-      const updated = this.#getItemView(item.id);
+      const updated = this.#getItemView(item.id, parsedQty >= currentQty ? 'removed' : 'pending');
 
       this.statements.insertEvent.run(
         list.id,
@@ -517,7 +532,7 @@ export class ShoppingListDb {
       }
 
       const currentCanonicalName = item.canonical_name;
-      const currentView = this.#getItemView(item.id);
+      const currentView = this.#getItemView(item.id, 'pending');
       const nextCanonicalName =
         rawNextItem === undefined
           ? item.canonical_name
@@ -549,7 +564,7 @@ export class ShoppingListDb {
         this.statements.touchItem.run(item.id);
       }
 
-      const updated = this.#getItemView(item.id);
+      const updated = this.#getItemView(item.id, 'pending');
 
       this.statements.insertEvent.run(
         list.id,
@@ -684,12 +699,12 @@ export class ShoppingListDb {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         item_id INTEGER NOT NULL,
         ordered_by TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
         qty REAL NOT NULL DEFAULT 0,
         image_ref TEXT,
         note TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(item_id, ordered_by),
         FOREIGN KEY (item_id) REFERENCES items(id)
       );
 
@@ -800,16 +815,26 @@ export class ShoppingListDb {
         WHERE id = ?
       `),
       showAllItems: this.db.prepare(`
-        SELECT id, list_id, canonical_name, status, note, created_at, updated_at
+        SELECT items.id,
+               items.list_id,
+               items.canonical_name,
+               item_orders.status,
+               items.note,
+               items.created_at,
+               MAX(item_orders.updated_at) AS updated_at
         FROM items
-        WHERE list_id = ?
+        JOIN item_orders ON item_orders.item_id = items.id
+        WHERE items.list_id = ?
+          AND item_orders.qty > 0
+        GROUP BY items.id, item_orders.status
         ORDER BY
-          CASE status
+          CASE item_orders.status
             WHEN 'pending' THEN 0
             WHEN 'bought' THEN 1
             ELSE 2
           END,
-          canonical_name
+          MAX(item_orders.updated_at) DESC,
+          items.canonical_name
       `),
       getListVersion: this.db.prepare(`
         SELECT COALESCE(MAX(id), 0) AS version
@@ -817,10 +842,20 @@ export class ShoppingListDb {
         WHERE list_id = ?
       `),
       showList: this.db.prepare(`
-        SELECT id, list_id, canonical_name, status, note, created_at, updated_at
+        SELECT items.id,
+               items.list_id,
+               items.canonical_name,
+               item_orders.status,
+               items.note,
+               items.created_at,
+               MAX(item_orders.updated_at) AS updated_at
         FROM items
-        WHERE list_id = ? AND status = ?
-        ORDER BY canonical_name
+        JOIN item_orders ON item_orders.item_id = items.id
+        WHERE items.list_id = ?
+          AND item_orders.status = ?
+          AND item_orders.qty > 0
+        GROUP BY items.id, item_orders.status
+        ORDER BY items.canonical_name
       `),
       upsertAlias: this.db.prepare(`
         INSERT INTO item_aliases(alias, canonical_name)
@@ -835,13 +870,28 @@ export class ShoppingListDb {
         LIMIT ?
       `),
       upsertOrder: this.db.prepare(`
-        INSERT INTO item_orders(item_id, ordered_by, qty, note, updated_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(item_id, ordered_by)
-        DO UPDATE SET
-          qty = item_orders.qty + excluded.qty,
-          note = COALESCE(excluded.note, item_orders.note),
-          updated_at = CURRENT_TIMESTAMP
+        INSERT INTO item_orders(item_id, ordered_by, status, qty, note, updated_at)
+        VALUES (?, ?, 'pending', ?, ?, CURRENT_TIMESTAMP)
+      `),
+      getActiveOrder: this.db.prepare(`
+        SELECT id, item_id, ordered_by, status, qty, note, created_at, updated_at
+        FROM item_orders
+        WHERE item_id = ?
+          AND ordered_by = ?
+          AND status = 'pending'
+        ORDER BY id DESC
+        LIMIT 1
+      `),
+      insertOrder: this.db.prepare(`
+        INSERT INTO item_orders(item_id, ordered_by, status, qty, note, updated_at)
+        VALUES (?, ?, 'pending', ?, ?, CURRENT_TIMESTAMP)
+      `),
+      addToOrder: this.db.prepare(`
+        UPDATE item_orders
+        SET qty = qty + ?,
+            note = COALESCE(?, note),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
       `),
       setOrderQty: this.db.prepare(`
         UPDATE item_orders
@@ -855,14 +905,23 @@ export class ShoppingListDb {
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `),
+      setOrdersStatus: this.db.prepare(`
+        UPDATE item_orders
+        SET status = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE item_id = ?
+          AND status = ?
+          AND qty > 0
+      `),
       deleteOrder: this.db.prepare(`
         DELETE FROM item_orders
         WHERE id = ?
       `),
       getOrdersForItem: this.db.prepare(`
-        SELECT id, item_id, ordered_by, qty, note, created_at, updated_at
+        SELECT id, item_id, ordered_by, status, qty, note, created_at, updated_at
         FROM item_orders
         WHERE item_id = ?
+          AND status = ?
           AND qty > 0
         ORDER BY lower(ordered_by), id
       `),
@@ -895,9 +954,10 @@ export class ShoppingListDb {
         LIMIT 1
       `),
       backfillOrders: this.db.prepare(`
-        INSERT INTO item_orders(item_id, ordered_by, qty, note)
+        INSERT INTO item_orders(item_id, ordered_by, status, qty, note)
         SELECT items.id,
                ?,
+               items.status,
                items.qty,
                items.note
         FROM items
@@ -906,6 +966,7 @@ export class ShoppingListDb {
             SELECT 1
             FROM item_orders
             WHERE item_orders.item_id = items.id
+              AND item_orders.status = items.status
           )
       `)
     };
@@ -931,14 +992,24 @@ export class ShoppingListDb {
       }
 
       const canonicalName = item.canonical_name;
-      const statusStatement = status === 'bought' ? this.statements.markBought : this.statements.markPending;
-      const result = /** @type {SqliteRunResult} */ (statusStatement.run(item.id));
+      const result = status === 'pending'
+        ? /** @type {SqliteRunResult} */ (this.statements.setOrdersStatus.run(status, item.id, 'bought'))
+        : /** @type {SqliteRunResult} */ (this.statements.setOrdersStatus.run(status, item.id, 'pending'));
+
+      if (status === 'pending') {
+        const removedResult = /** @type {SqliteRunResult} */ (
+          this.statements.setOrdersStatus.run(status, item.id, 'removed')
+        );
+        result.changes += removedResult.changes;
+      }
 
       if (result.changes === 0) {
         throw new Error(`Item not found: ${canonicalName}`);
       }
 
-      const updated = this.#getItemView(item.id);
+      const statusStatement = status === 'bought' ? this.statements.markBought : this.statements.markPending;
+      statusStatement.run(item.id);
+      const updated = this.#getItemView(item.id, status);
 
       this.statements.insertEvent.run(
         list.id,
@@ -956,14 +1027,15 @@ export class ShoppingListDb {
 
   /**
    * @param {number} itemId
+   * @param {'pending' | 'bought' | 'removed'} status
    * @returns {ListItemRow}
    */
-  #getItemView(itemId) {
+  #getItemView(itemId, status) {
     const item = /** @type {ItemRow | undefined} */ (this.statements.getItemById.get(itemId));
     if (item === undefined) {
       throw new Error(`Item not found: ${itemId}`);
     }
-    return this.#buildItemView(item);
+    return this.#buildItemView({ ...item, status });
   }
 
   /**
@@ -971,7 +1043,7 @@ export class ShoppingListDb {
    * @returns {ListItemRow}
    */
   #buildItemView(item) {
-    const orders = this.#getOrdersForItem(item.id).map((order) => ({
+    const orders = this.#getOrdersForItem(item.id, /** @type {'pending' | 'bought' | 'removed'} */ (item.status)).map((order) => ({
       id: order.id,
       ordered_by: order.ordered_by,
       qty: order.qty,
@@ -1011,10 +1083,11 @@ export class ShoppingListDb {
 
   /**
    * @param {number} itemId
+   * @param {'pending' | 'bought' | 'removed'} status
    * @returns {OrderRow[]}
    */
-  #getOrdersForItem(itemId) {
-    return /** @type {OrderRow[]} */ (this.statements.getOrdersForItem.all(itemId));
+  #getOrdersForItem(itemId, status) {
+    return /** @type {OrderRow[]} */ (this.statements.getOrdersForItem.all(itemId, status));
   }
 
   /**
@@ -1101,6 +1174,92 @@ export class ShoppingListDb {
     if (!columns.some((column) => column.name === columnName)) {
       this.db.exec(`ALTER TABLE item_orders ADD COLUMN ${columnName} ${columnType}`);
     }
+  }
+
+  /**
+   * @returns {void}
+   */
+  #ensureOrderStatusColumn() {
+    const columns = /** @type {Array<{ name: string }>} */ (
+      this.db.prepare('PRAGMA table_info(item_orders)').all()
+    );
+
+    if (columns.some((column) => column.name === 'status')) {
+      return;
+    }
+
+    this.db.exec("ALTER TABLE item_orders ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'");
+    this.db.exec(`
+      UPDATE item_orders
+      SET status = COALESCE((
+        SELECT items.status
+        FROM items
+        WHERE items.id = item_orders.item_id
+      ), 'pending')
+    `);
+  }
+
+  /**
+   * @returns {void}
+   */
+  #migrateOrderUniquenessForStatus() {
+    if (!this.#hasLegacyOrderUniqueness()) {
+      return;
+    }
+
+    this.db.exec(`
+      PRAGMA foreign_keys = OFF;
+      BEGIN;
+
+      CREATE TABLE item_orders_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_id INTEGER NOT NULL,
+        ordered_by TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        qty REAL NOT NULL DEFAULT 0,
+        image_ref TEXT,
+        note TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (item_id) REFERENCES items(id)
+      );
+
+      INSERT INTO item_orders_new(id, item_id, ordered_by, status, qty, image_ref, note, created_at, updated_at)
+      SELECT id, item_id, ordered_by, status, qty, image_ref, note, created_at, updated_at
+      FROM item_orders;
+
+      DROP TABLE item_orders;
+      ALTER TABLE item_orders_new RENAME TO item_orders;
+
+      COMMIT;
+      PRAGMA foreign_keys = ON;
+    `);
+  }
+
+  /**
+   * @returns {boolean}
+   */
+  #hasLegacyOrderUniqueness() {
+    const indexes = /** @type {Array<{ name: string, unique: number }>} */ (
+      this.db.prepare('PRAGMA index_list(item_orders)').all()
+    );
+
+    for (const index of indexes) {
+      if (index.unique !== 1) {
+        continue;
+      }
+
+      const escapedName = index.name.replace(/"/g, '""');
+      const columns = /** @type {Array<{ name: string }>} */ (
+        this.db.prepare(`PRAGMA index_info("${escapedName}")`).all()
+      ).map((column) => column.name);
+
+      if (columns.length === 2 && columns[0] === 'item_id' && columns[1] === 'ordered_by') {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**
