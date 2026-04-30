@@ -606,3 +606,116 @@ test('http api exposes unified per-order media for chat-created entries', async 
     fs.rmSync(audioPath, { force: true });
   }
 });
+
+test('skill cli can clear an order note explicitly', () => {
+  const dbPath = createDbPath();
+
+  try {
+    runSkillCli(dbPath, [
+      'add-item',
+      'banana',
+      '1',
+      'supermercado',
+      '--note',
+      'small and green'
+    ]);
+
+    const clearResult = runSkillCli(dbPath, [
+      'annotate-order',
+      'banana',
+      'supermercado',
+      '--clear-note'
+    ]);
+
+    assert.equal(clearResult.orders[0]?.note, null);
+
+    const db = new ShoppingListDb(dbPath);
+    try {
+      const list = db.showList('supermercado');
+      assert.equal(list.items[0]?.name, 'banana');
+      assert.equal(list.items[0]?.orders[0]?.note, null);
+
+      const events = db.showEvents(5);
+      assert.equal(events.events[0]?.action, 'annotate_order');
+      assert.match(events.events[0]?.payload_json ?? '', /"clearNote":true/);
+    } finally {
+      db.close();
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('web db mutations can update mixed-case items created by the chat skill', () => {
+  const dbPath = createDbPath();
+  const itemName = 'bananas pequeñas ligeramente verdes para lunch box de Gianna';
+
+  try {
+    runSkillCli(dbPath, ['add-item', itemName, '1', 'supermercado']);
+
+    const db = new ShoppingListDb(dbPath);
+    try {
+      const bought = db.markBought('supermercado', itemName);
+      assert.equal(bought.item, itemName);
+      assert.equal(bought.status, 'bought');
+
+      assert.deepEqual(
+        db.showList('supermercado', 'bought').items.map((item) => ({
+          name: item.name,
+          status: item.status
+        })),
+        [{ name: itemName, status: 'bought' }]
+      );
+    } finally {
+      db.close();
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('skill cli writes media rows visible to an already-running web server', async () => {
+  const dbPath = createDbPath();
+  const imagePath = path.join(os.tmpdir(), `shopping-live-image-${Date.now()}.jpg`);
+  fs.writeFileSync(imagePath, 'live-image');
+
+  const { server, baseUrl } = await startServer(dbPath);
+
+  try {
+    runSkillCli(dbPath, [
+      'add-item',
+      'Old Spice Nightpanther deodorant stick',
+      '1',
+      'supermercado',
+      '--image',
+      imagePath
+    ]);
+
+    const snapshotResponse = await fetch(`${baseUrl}/api/lists/supermercado`);
+    const snapshot = await readResponseJson(snapshotResponse);
+    const item = snapshot.items.find(
+      /** @param {{ name: string, orders?: any[] }} entry */
+      (entry) => entry.name === 'Old Spice Nightpanther deodorant stick'
+    );
+
+    const mediaUrl = item?.orders[0]?.media[0]?.url;
+    assert.equal(typeof mediaUrl, 'string');
+
+    const imageResponse = await fetch(`${baseUrl}${mediaUrl}`);
+    assert.equal(imageResponse.status, 200);
+    assert.equal(imageResponse.headers.get('content-type'), 'image/jpeg');
+    assert.equal(await imageResponse.text(), 'live-image');
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(undefined);
+      });
+    });
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(imagePath, { force: true });
+  }
+});

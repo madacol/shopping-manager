@@ -1,6 +1,7 @@
 // @ts-check
 
 import { DatabaseSync } from 'node:sqlite';
+import path from 'node:path';
 
 /**
  * @typedef {import('node:sqlite').StatementSync} StatementSync
@@ -60,6 +61,7 @@ import { DatabaseSync } from 'node:sqlite';
  * @property {string | null | undefined} [orderedBy]
  * @property {string | null | undefined} [imageRef]
  * @property {string | null | undefined} [note]
+ * @property {boolean | undefined} [clearNote]
  */
 
 /**
@@ -73,6 +75,9 @@ import { DatabaseSync } from 'node:sqlite';
  * @property {StatementSync} upsertOrder
  * @property {StatementSync} annotateOrder
  * @property {StatementSync} getOrdersForItem
+ * @property {StatementSync} insertOrderMedia
+ * @property {StatementSync} existingOrderMedia
+ * @property {StatementSync} legacyOrderMediaRows
  * @property {StatementSync} syncItemQty
  * @property {StatementSync} insertEvent
  * @property {StatementSync} markPending
@@ -220,6 +225,7 @@ class ShoppingListDb {
       );
 
       this.statements.upsertOrder.run(itemBeforeSync.id, orderedBy, parsedQty, imageRef, note);
+      this.#attachOrderMedia(itemBeforeSync.id, orderedBy, imageRef);
       this.statements.syncItemQty.run(itemBeforeSync.id, itemBeforeSync.id);
 
       const item = /** @type {ItemRow} */ (
@@ -264,10 +270,11 @@ class ShoppingListDb {
   annotateOrder(listName, rawItem, options = {}) {
     const orderedBy = normalizeOptional(options.orderedBy) ?? 'unknown';
     const imageRef = normalizeOptional(options.imageRef);
-    const note = normalizeOptional(options.note);
+    const clearNote = options.clearNote === true;
+    const note = clearNote ? null : normalizeOptional(options.note);
 
-    if (imageRef === null && note === null) {
-      throw new Error('annotate-order requires --image, --note, or both');
+    if (imageRef === null && note === null && !clearNote) {
+      throw new Error('annotate-order requires --image, --note, --clear-note, or a combination');
     }
 
     return this.#transaction(() => {
@@ -281,7 +288,7 @@ class ShoppingListDb {
       );
 
       const result = /** @type {{ changes: number }} */ (
-        this.statements.annotateOrder.run(imageRef, note, item.id, orderedBy)
+        this.statements.annotateOrder.run(imageRef, clearNote ? 1 : 0, note, item.id, orderedBy)
       );
 
       if (result.changes === 0) {
@@ -294,6 +301,7 @@ class ShoppingListDb {
           `Item not found after annotate: ${canonicalItem}`
         )
       );
+      this.#attachOrderMedia(refreshedItem.id, orderedBy, imageRef);
       const orders = this.#getOrdersForItem(refreshedItem.id);
 
       this.statements.insertEvent.run(
@@ -305,7 +313,8 @@ class ShoppingListDb {
           canonicalItem,
           orderedBy,
           imageRef,
-          note
+          note,
+          clearNote
         })
       );
 
@@ -535,6 +544,16 @@ class ShoppingListDb {
         FOREIGN KEY (item_id) REFERENCES items(id)
       );
 
+      CREATE TABLE IF NOT EXISTS order_media (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_order_id INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('image', 'audio', 'video')),
+        path TEXT NOT NULL,
+        mime_type TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (item_order_id) REFERENCES item_orders(id)
+      );
+
       CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         list_id INTEGER NOT NULL,
@@ -550,6 +569,7 @@ class ShoppingListDb {
 
   #migrateSchema() {
     this.statements.backfillOrders.run();
+    this.#backfillOrderMedia();
   }
 
   /**
@@ -631,7 +651,7 @@ class ShoppingListDb {
       annotateOrder: this.db.prepare(`
         UPDATE item_orders
         SET image_ref = COALESCE(?, image_ref),
-            note = COALESCE(?, note),
+            note = CASE WHEN ? THEN NULL ELSE COALESCE(?, note) END,
             updated_at = CURRENT_TIMESTAMP
         WHERE item_id = ? AND ordered_by = ?
       `),
@@ -640,6 +660,22 @@ class ShoppingListDb {
         FROM item_orders
         WHERE item_id = ?
         ORDER BY ordered_by
+      `),
+      insertOrderMedia: this.db.prepare(`
+        INSERT INTO order_media(item_order_id, kind, path, mime_type)
+        VALUES (?, ?, ?, ?)
+      `),
+      existingOrderMedia: this.db.prepare(`
+        SELECT id
+        FROM order_media
+        WHERE item_order_id = ? AND path = ?
+        LIMIT 1
+      `),
+      legacyOrderMediaRows: this.db.prepare(`
+        SELECT id, image_ref
+        FROM item_orders
+        WHERE image_ref IS NOT NULL
+          AND trim(image_ref) <> ''
       `),
       syncItemQty: this.db.prepare(`
         UPDATE items
@@ -720,6 +756,51 @@ class ShoppingListDb {
 
   /**
    * @param {number} itemId
+   * @param {string} orderedBy
+   * @param {string | null} imageRef
+   */
+  #attachOrderMedia(itemId, orderedBy, imageRef) {
+    if (imageRef === null) {
+      return;
+    }
+
+    const order = this.#getOrdersForItem(itemId).find((itemOrder) => itemOrder.ordered_by === orderedBy);
+    if (order === undefined) {
+      throw new Error(`Order not found for media attachment: ${orderedBy}`);
+    }
+
+    this.#insertOrderMediaIfMissing(order.id, imageRef);
+  }
+
+  #backfillOrderMedia() {
+    const rows = /** @type {Array<{ id: number, image_ref: string }>} */ (
+      this.statements.legacyOrderMediaRows.all()
+    );
+
+    for (const row of rows) {
+      this.#insertOrderMediaIfMissing(row.id, row.image_ref);
+    }
+  }
+
+  /**
+   * @param {number} orderId
+   * @param {string} mediaPath
+   */
+  #insertOrderMediaIfMissing(orderId, mediaPath) {
+    if (this.statements.existingOrderMedia.get(orderId, mediaPath) !== undefined) {
+      return;
+    }
+
+    this.statements.insertOrderMedia.run(
+      orderId,
+      inferMediaKind(mediaPath),
+      mediaPath,
+      inferMimeType(mediaPath)
+    );
+  }
+
+  /**
+   * @param {number} itemId
    * @returns {OrderRow[]}
    */
   #getOrdersForItem(itemId) {
@@ -768,8 +849,63 @@ function normalizeOptional(value) {
 }
 
 /**
+ * @param {string} mediaPath
+ * @returns {'image' | 'audio' | 'video'}
+ */
+function inferMediaKind(mediaPath) {
+  const extension = path.extname(mediaPath).toLowerCase();
+  if (['.mp3', '.m4a', '.ogg', '.oga', '.wav', '.webm'].includes(extension)) {
+    return 'audio';
+  }
+  if (['.mp4', '.mov', '.m4v'].includes(extension)) {
+    return 'video';
+  }
+  return 'image';
+}
+
+/**
+ * @param {string} mediaPath
+ * @returns {string}
+ */
+function inferMimeType(mediaPath) {
+  const extension = path.extname(mediaPath).toLowerCase();
+  switch (extension) {
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.png':
+      return 'image/png';
+    case '.gif':
+      return 'image/gif';
+    case '.webp':
+      return 'image/webp';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.mp3':
+      return 'audio/mpeg';
+    case '.m4a':
+      return 'audio/mp4';
+    case '.ogg':
+    case '.oga':
+      return 'audio/ogg';
+    case '.wav':
+      return 'audio/wav';
+    case '.webm':
+      return 'audio/webm';
+    case '.mp4':
+      return 'video/mp4';
+    case '.mov':
+      return 'video/quicktime';
+    case '.m4v':
+      return 'video/x-m4v';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+/**
  * @param {string[]} args
- * @returns {{ positionals: string[], orderedBy: string | undefined, imageRef: string | undefined, note: string | undefined }}
+ * @returns {{ positionals: string[], orderedBy: string | undefined, imageRef: string | undefined, note: string | undefined, clearNote: boolean }}
  */
 function parseOptions(args) {
   /** @type {string[]} */
@@ -780,6 +916,7 @@ function parseOptions(args) {
   let imageRef;
   /** @type {string | undefined} */
   let note;
+  let clearNote = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
@@ -802,16 +939,21 @@ function parseOptions(args) {
       continue;
     }
 
+    if (value === '--clear-note') {
+      clearNote = true;
+      continue;
+    }
+
     positionals.push(value);
   }
 
-  return { positionals, orderedBy, imageRef, note };
+  return { positionals, orderedBy, imageRef, note, clearNote };
 }
 
 function printUsage() {
   console.log(`Usage:
   node skills/shopping-list-chat/scripts/shopping-list.mjs add-item <item> [qty] [list] [--by <name>] [--image <ref>] [--note <text>]
-  node skills/shopping-list-chat/scripts/shopping-list.mjs annotate-order <item> [list] [--by <name>] [--image <ref>] [--note <text>]
+  node skills/shopping-list-chat/scripts/shopping-list.mjs annotate-order <item> [list] [--by <name>] [--image <ref>] [--note <text>] [--clear-note]
   node skills/shopping-list-chat/scripts/shopping-list.mjs mark-pending <item> [list]
   node skills/shopping-list-chat/scripts/shopping-list.mjs remove-item <item> [list]
   node skills/shopping-list-chat/scripts/shopping-list.mjs mark-bought <item> [list]
@@ -829,7 +971,7 @@ function main(argv) {
   const [command, ...rawArgs] = argv;
   const db = new ShoppingListDb(process.env.SHOPPING_LIST_DB || 'shopping-lists.sqlite');
   const defaultList = process.env.SHOPPING_LIST_DEFAULT_LIST || 'supermercado';
-  const { positionals, orderedBy, imageRef, note } = parseOptions(rawArgs);
+  const { positionals, orderedBy, imageRef, note, clearNote } = parseOptions(rawArgs);
 
   try {
     /** @type {unknown} */
@@ -847,7 +989,8 @@ function main(argv) {
         result = db.annotateOrder(positionals[1] || defaultList, positionals[0], {
           orderedBy,
           imageRef,
-          note
+          note,
+          clearNote
         });
         break;
       case 'mark-pending':

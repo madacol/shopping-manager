@@ -119,6 +119,7 @@ import { DatabaseSync } from 'node:sqlite';
  * @property {StatementSync} resolveAlias
  * @property {StatementSync} ensureItem
  * @property {StatementSync} getItemByCanonicalName
+ * @property {StatementSync} getItemByCanonicalNameNoCase
  * @property {StatementSync} getItemById
  * @property {StatementSync} renameItem
  * @property {StatementSync} insertEvent
@@ -264,6 +265,18 @@ export class ShoppingListDb {
   }
 
   /**
+   * @param {number} listId
+   * @param {string} canonicalName
+   * @returns {ItemRow | undefined}
+   */
+  #getItemByCanonicalName(listId, canonicalName) {
+    return /** @type {ItemRow | undefined} */ (
+      this.statements.getItemByCanonicalName.get(listId, canonicalName) ??
+        this.statements.getItemByCanonicalNameNoCase.get(listId, canonicalName)
+    );
+  }
+
+  /**
    * @param {string} alias
    * @param {string} canonicalName
    * @returns {AliasResult}
@@ -299,16 +312,23 @@ export class ShoppingListDb {
 
     return this.#transaction(() => {
       const list = this.createList(normalizedListName);
-      const canonicalName = this.resolveCanonicalName(rawItem).toLowerCase();
+      let canonicalName = this.resolveCanonicalName(rawItem).toLowerCase();
+      let item = this.#getItemByCanonicalName(list.id, canonicalName);
 
-      this.statements.ensureItem.run(list.id, canonicalName);
-
-      const item = /** @type {ItemRow} */ (
-        assertDefined(
-          this.statements.getItemByCanonicalName.get(list.id, canonicalName),
-          `Item not found after ensure: ${canonicalName}`
-        )
-      );
+      if (item === undefined) {
+        this.statements.ensureItem.run(list.id, canonicalName);
+        item = /** @type {ItemRow} */ (
+          assertDefined(
+            this.statements.getItemByCanonicalName.get(list.id, canonicalName),
+            `Item not found after ensure: ${canonicalName}`
+          )
+        );
+      } else {
+        canonicalName = item.canonical_name;
+        if (item.status !== 'pending') {
+          this.statements.markPending.run(item.id);
+        }
+      }
 
       this.statements.upsertOrder.run(item.id, UNKNOWN_ORDERED_BY, parsedQty, normalizedNote);
       this.statements.touchItem.run(item.id);
@@ -344,15 +364,14 @@ export class ShoppingListDb {
 
     return this.#transaction(() => {
       const list = this.createList(normalizedListName);
-      const canonicalName = this.resolveCanonicalName(rawItem).toLowerCase();
-      const item = /** @type {ItemRow | undefined} */ (
-        this.statements.getItemByCanonicalName.get(list.id, canonicalName)
-      );
+      const requestedCanonicalName = this.resolveCanonicalName(rawItem).toLowerCase();
+      const item = this.#getItemByCanonicalName(list.id, requestedCanonicalName);
 
       if (item === undefined) {
-        throw new Error(`Item not found: ${canonicalName}`);
+        throw new Error(`Item not found: ${requestedCanonicalName}`);
       }
 
+      const canonicalName = item.canonical_name;
       const orders = this.#getOrdersForItem(item.id);
       const editableOrder = this.#getEditableOrder(orders, canonicalName, 'update note');
 
@@ -410,15 +429,14 @@ export class ShoppingListDb {
 
     return this.#transaction(() => {
       const list = this.createList(normalizedListName);
-      const canonicalName = this.resolveCanonicalName(rawItem).toLowerCase();
-      const item = /** @type {ItemRow | undefined} */ (
-        this.statements.getItemByCanonicalName.get(list.id, canonicalName)
-      );
+      const requestedCanonicalName = this.resolveCanonicalName(rawItem).toLowerCase();
+      const item = this.#getItemByCanonicalName(list.id, requestedCanonicalName);
 
       if (item === undefined) {
-        throw new Error(`Item not found: ${canonicalName}`);
+        throw new Error(`Item not found: ${requestedCanonicalName}`);
       }
 
+      const canonicalName = item.canonical_name;
       const orders = this.#getOrdersForItem(item.id);
       const currentQty = sumOrderQty(orders);
       const parsedQty = qty === undefined ? currentQty : Number(qty);
@@ -491,15 +509,14 @@ export class ShoppingListDb {
 
     return this.#transaction(() => {
       const list = this.createList(normalizedListName);
-      const currentCanonicalName = this.resolveCanonicalName(currentRawItem).toLowerCase();
-      const item = /** @type {ItemRow | undefined} */ (
-        this.statements.getItemByCanonicalName.get(list.id, currentCanonicalName)
-      );
+      const requestedCurrentCanonicalName = this.resolveCanonicalName(currentRawItem).toLowerCase();
+      const item = this.#getItemByCanonicalName(list.id, requestedCurrentCanonicalName);
 
       if (item === undefined) {
-        throw new Error(`Item not found: ${currentCanonicalName}`);
+        throw new Error(`Item not found: ${requestedCurrentCanonicalName}`);
       }
 
+      const currentCanonicalName = item.canonical_name;
       const currentView = this.#getItemView(item.id);
       const nextCanonicalName =
         rawNextItem === undefined
@@ -737,6 +754,13 @@ export class ShoppingListDb {
         FROM items
         WHERE list_id = ? AND canonical_name = ?
       `),
+      getItemByCanonicalNameNoCase: this.db.prepare(`
+        SELECT id, list_id, canonical_name, status, note, created_at, updated_at
+        FROM items
+        WHERE list_id = ? AND lower(canonical_name) = lower(?)
+        ORDER BY id
+        LIMIT 1
+      `),
       getItemById: this.db.prepare(`
         SELECT id, list_id, canonical_name, status, note, created_at, updated_at
         FROM items
@@ -899,15 +923,14 @@ export class ShoppingListDb {
 
     return this.#transaction(() => {
       const list = this.createList(normalizedListName);
-      const canonicalName = this.resolveCanonicalName(rawItem).toLowerCase();
-      const item = /** @type {ItemRow | undefined} */ (
-        this.statements.getItemByCanonicalName.get(list.id, canonicalName)
-      );
+      const requestedCanonicalName = this.resolveCanonicalName(rawItem).toLowerCase();
+      const item = this.#getItemByCanonicalName(list.id, requestedCanonicalName);
 
       if (item === undefined) {
-        throw new Error(`Item not found: ${canonicalName}`);
+        throw new Error(`Item not found: ${requestedCanonicalName}`);
       }
 
+      const canonicalName = item.canonical_name;
       const statusStatement = status === 'bought' ? this.statements.markBought : this.statements.markPending;
       const result = /** @type {SqliteRunResult} */ (statusStatement.run(item.id));
 

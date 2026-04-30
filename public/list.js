@@ -146,7 +146,7 @@ function renderMedia(media) {
     const image = document.createElement('img');
     image.className = 'order-media order-media--image';
     image.src = media.url;
-    image.alt = 'Referencia del pedido';
+    image.alt = 'Adjunto del pedido';
     image.loading = 'lazy';
     return image;
   }
@@ -179,9 +179,9 @@ function getVisibleOrders(item) {
 
   return item.orders.filter((order) => {
     const hasIdentity = order.ordered_by !== 'unknown';
-    const hasNote = Boolean(order.note);
+    const hasNote = Boolean(order.note && order.note !== item.note);
     const hasMedia = Array.isArray(order.media) && order.media.length > 0;
-    return hasIdentity || hasNote || hasMedia || item.orders.length > 1;
+    return hasIdentity || hasNote || hasMedia;
   });
 }
 
@@ -221,7 +221,7 @@ function renderOrders(item) {
       card.append(top);
     }
 
-    if (order.note) {
+    if (order.note && order.note !== item.note) {
       const note = document.createElement('p');
       note.className = 'order-note';
       note.textContent = order.note;
