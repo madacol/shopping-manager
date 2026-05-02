@@ -288,7 +288,7 @@ class ShoppingListDb {
     const note = clearNote ? null : normalizeOptional(options.note);
 
     if (imageRef === null && note === null && !clearNote) {
-      throw new Error('annotate-order requires --image, --note, --clear-note, or a combination');
+      throw new Error('annotate-order requires --media, --note, --clear-note, or a combination');
     }
 
     return this.#transaction(() => {
@@ -1051,7 +1051,7 @@ function parseOptions(args) {
       continue;
     }
 
-    if (value === '--image') {
+    if (value === '--media') {
       imageRef = args[index + 1];
       index += 1;
       continue;
@@ -1076,8 +1076,8 @@ function parseOptions(args) {
 
 function printUsage() {
   console.log(`Usage:
-  node skills/shopping-list-chat/scripts/shopping-list.mjs add-item <item> [qty] [list] [--by <name>] [--image <ref>] [--note <text>]
-  node skills/shopping-list-chat/scripts/shopping-list.mjs annotate-order <item> [list] [--by <name>] [--image <ref>] [--note <text>] [--clear-note]
+  node skills/shopping-list-chat/scripts/shopping-list.mjs add-item <item> [qty] [list] [--by <name>] [--media <ref>] [--note <text>]
+  node skills/shopping-list-chat/scripts/shopping-list.mjs annotate-order <item> [list] [--by <name>] [--media <ref>] [--note <text>] [--clear-note]
   node skills/shopping-list-chat/scripts/shopping-list.mjs mark-pending <item> [list]
   node skills/shopping-list-chat/scripts/shopping-list.mjs remove-item <item> [list]
   node skills/shopping-list-chat/scripts/shopping-list.mjs mark-bought <item> [list]

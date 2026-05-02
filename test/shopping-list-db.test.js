@@ -525,7 +525,7 @@ test('http api exposes unified per-order media for chat-created entries', async 
     'supermercado',
     '--by',
     'Rosalba',
-    '--image',
+    '--media',
     imagePath,
     '--note',
     'el de la foto'
@@ -537,7 +537,7 @@ test('http api exposes unified per-order media for chat-created entries', async 
     'supermercado',
     '--by',
     'Juan',
-    '--image',
+    '--media',
     audioPath,
     '--note',
     'el del audio'
@@ -687,7 +687,7 @@ test('skill cli writes media rows visible to an already-running web server', asy
       'Old Spice Nightpanther deodorant stick',
       '1',
       'supermercado',
-      '--image',
+      '--media',
       imagePath
     ]);
 
@@ -732,7 +732,7 @@ test('new pending order does not inherit media from an older bought order', asyn
     'supermercado',
     '--by',
     'photo request',
-    '--image',
+    '--media',
     imagePath
   ]);
   runSkillCli(dbPath, ['mark-bought', 'jugo de ciruelas', 'supermercado']);
