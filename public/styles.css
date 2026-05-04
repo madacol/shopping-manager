@@ -31,6 +31,10 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+body.has-image-viewer {
+  overflow: hidden;
+}
+
 button,
 input {
   font: inherit;
@@ -425,6 +429,16 @@ input {
   margin-top: 10px;
 }
 
+.order-media-button {
+  width: 100%;
+  display: block;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: zoom-in;
+}
+
 .order-media {
   width: 100%;
   display: block;
@@ -437,6 +451,42 @@ input {
 .order-media--video {
   max-height: 220px;
   object-fit: cover;
+}
+
+.order-media--audio {
+  min-height: 44px;
+}
+
+.image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.9);
+}
+
+.image-viewer__image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.image-viewer__close {
+  position: fixed;
+  top: max(14px, env(safe-area-inset-top));
+  right: max(14px, env(safe-area-inset-right));
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(20, 20, 22, 0.9);
+  color: var(--text);
+  font-size: 1.8rem;
+  line-height: 1;
+  cursor: pointer;
 }
 
 .state-pill {

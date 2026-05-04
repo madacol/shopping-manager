@@ -36,6 +36,74 @@ const pendingCount = $('#pending-count');
 const activityCount = $('#activity-count');
 const progressFill = $('#progress-fill');
 
+function getMediaExtension(media) {
+  const source = typeof media.path === 'string' ? media.path : media.url;
+  if (typeof source !== 'string') {
+    return '';
+  }
+
+  const pathname = source.split(/[?#]/, 1)[0] ?? '';
+  const dotIndex = pathname.lastIndexOf('.');
+  return dotIndex === -1 ? '' : pathname.slice(dotIndex).toLowerCase();
+}
+
+function isAudioMedia(media) {
+  const mimeType = typeof media.mime_type === 'string' ? media.mime_type.toLowerCase() : '';
+  return (
+    media.kind === 'audio' ||
+    mimeType.startsWith('audio/') ||
+    ['.mp3', '.m4a', '.ogg', '.oga', '.opus', '.wav', '.aac', '.flac', '.webm'].includes(getMediaExtension(media))
+  );
+}
+
+function isImageMedia(media) {
+  const mimeType = typeof media.mime_type === 'string' ? media.mime_type.toLowerCase() : '';
+  return media.kind === 'image' || mimeType.startsWith('image/');
+}
+
+function openImageViewer(src, alt) {
+  const overlay = document.createElement('div');
+  overlay.className = 'image-viewer';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-label', 'Imagen adjunta');
+
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.className = 'image-viewer__close';
+  closeButton.setAttribute('aria-label', 'Cerrar imagen');
+  closeButton.textContent = '×';
+
+  const image = document.createElement('img');
+  image.className = 'image-viewer__image';
+  image.src = src;
+  image.alt = alt;
+
+  const close = () => {
+    document.removeEventListener('keydown', onKeydown);
+    overlay.remove();
+    document.body.classList.remove('has-image-viewer');
+  };
+
+  function onKeydown(event) {
+    if (event.key === 'Escape') {
+      close();
+    }
+  }
+
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay || event.target === closeButton) {
+      close();
+    }
+  });
+
+  document.addEventListener('keydown', onKeydown);
+  overlay.append(closeButton, image);
+  document.body.append(overlay);
+  document.body.classList.add('has-image-viewer');
+  closeButton.focus();
+}
+
 function api(name, action = '') {
   const suffix = action ? `/${action}` : '';
   return new URL(`./api/lists/${encodeURIComponent(name)}${suffix}`, location.href);
@@ -142,21 +210,35 @@ function renderMedia(media) {
     return null;
   }
 
-  if (media.kind === 'image') {
+  if (isImageMedia(media)) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'order-media-button';
+    button.title = 'Ver imagen completa';
+    button.setAttribute('aria-label', 'Ver imagen completa');
+
     const image = document.createElement('img');
     image.className = 'order-media order-media--image';
     image.src = media.url;
     image.alt = 'Adjunto del pedido';
     image.loading = 'lazy';
-    return image;
+
+    button.append(image);
+    button.addEventListener('click', () => {
+      openImageViewer(image.currentSrc || image.src, image.alt);
+    });
+    return button;
   }
 
-  if (media.kind === 'audio') {
+  if (isAudioMedia(media)) {
     const audio = document.createElement('audio');
     audio.className = 'order-media order-media--audio';
     audio.controls = true;
     audio.preload = 'metadata';
     audio.src = media.url;
+    if (typeof media.mime_type === 'string' && media.mime_type.startsWith('audio/')) {
+      audio.type = media.mime_type;
+    }
     return audio;
   }
 

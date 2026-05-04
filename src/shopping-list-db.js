@@ -1409,7 +1409,7 @@ function sortOrdersForRemoval(orders) {
 function inferMediaKind(mediaPath) {
   const extension = path.extname(mediaPath).toLowerCase();
 
-  if (['.ogg', '.mp3', '.wav', '.m4a', '.aac', '.flac'].includes(extension)) {
+  if (['.ogg', '.oga', '.opus', '.mp3', '.wav', '.m4a', '.aac', '.flac', '.webm'].includes(extension)) {
     return 'audio';
   }
 
@@ -1440,13 +1440,22 @@ function inferMimeType(mediaPath) {
     case '.svg':
       return 'image/svg+xml';
     case '.ogg':
+    case '.oga':
       return 'audio/ogg';
+    case '.opus':
+      return 'audio/opus';
     case '.mp3':
       return 'audio/mpeg';
     case '.wav':
       return 'audio/wav';
     case '.m4a':
       return 'audio/mp4';
+    case '.aac':
+      return 'audio/aac';
+    case '.flac':
+      return 'audio/flac';
+    case '.webm':
+      return 'audio/webm';
     case '.mp4':
       return 'video/mp4';
     case '.mov':

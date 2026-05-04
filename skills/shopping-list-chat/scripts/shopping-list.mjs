@@ -1007,7 +1007,7 @@ function normalizeOptional(value) {
  */
 function inferMediaKind(mediaPath) {
   const extension = path.extname(mediaPath).toLowerCase();
-  if (['.mp3', '.m4a', '.ogg', '.oga', '.wav', '.webm'].includes(extension)) {
+  if (['.mp3', '.m4a', '.ogg', '.oga', '.opus', '.wav', '.aac', '.flac', '.webm'].includes(extension)) {
     return 'audio';
   }
   if (['.mp4', '.mov', '.m4v'].includes(extension)) {
@@ -1041,8 +1041,14 @@ function inferMimeType(mediaPath) {
     case '.ogg':
     case '.oga':
       return 'audio/ogg';
+    case '.opus':
+      return 'audio/opus';
     case '.wav':
       return 'audio/wav';
+    case '.aac':
+      return 'audio/aac';
+    case '.flac':
+      return 'audio/flac';
     case '.webm':
       return 'audio/webm';
     case '.mp4':
