@@ -5,7 +5,7 @@ description: Manage this chat's shopping list in a local SQLite database from na
 
 # Shopping List Chat
 
-Use the bundled script to persist shopping-list changes in `shopping-lists.sqlite` in the current workspace.
+Use the bundled script to persist shopping-list changes in `.shopping-list/shopping-lists.sqlite` in the current workspace.
 
 This is the documentation to read before handling shopping-list requests in this workspace.
 
@@ -45,6 +45,8 @@ Use `node skills/shopping-list-chat/scripts/shopping-list.mjs ...`.
   `node skills/shopping-list-chat/scripts/shopping-list.mjs show-list supermercado`
 - Show known lists:
   `node skills/shopping-list-chat/scripts/shopping-list.mjs show-lists`
+- Initialize this workspace's local database:
+  `node skills/shopping-list-chat/scripts/shopping-list.mjs init`
 - Add an item alias:
   `node skills/shopping-list-chat/scripts/shopping-list.mjs add-alias coke "coca cola"`
 - Add a list alias:
@@ -87,6 +89,6 @@ Use `node skills/shopping-list-chat/scripts/shopping-list.mjs ...`.
 - `src/server.js` and `public/list.js` expose the grouped web view from `item_orders.status`.
 - If the request is about chat operations, prefer the skill script, not the simpler CLI.
 
-## Current Chat Convention
+## Local Aliases
 
-Treat `dunnes` as an alias of `supermercado`.
+List and item aliases are workspace data. Add or inspect them through the CLI/database instead of hardcoding chat-specific aliases in this skill.

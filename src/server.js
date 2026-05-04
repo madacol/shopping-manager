@@ -5,9 +5,9 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { ShoppingListDb } from './shopping-list-db.js';
+import { getDefaultShoppingListDbPath, ShoppingListDb } from './shopping-list-db.js';
 
-const DEFAULT_DB_PATH = process.env.SHOPPING_LIST_DB ?? 'shopping-lists.sqlite';
+const DEFAULT_DB_PATH = getDefaultShoppingListDbPath();
 const DEFAULT_HOST = process.env.HOST ?? '127.0.0.1';
 const DEFAULT_PORT = Number(process.env.PORT ?? 3000);
 const MAX_BODY_BYTES = 8 * 1024;

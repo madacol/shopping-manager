@@ -3,10 +3,10 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { ShoppingListDb } from './shopping-list-db.js';
+import { getDefaultShoppingListDbPath, ShoppingListDb } from './shopping-list-db.js';
 
 function getDefaultDbPath() {
-  return process.env.SHOPPING_LIST_DB ?? 'shopping-lists.sqlite';
+  return getDefaultShoppingListDbPath();
 }
 
 function getDefaultList() {
@@ -16,6 +16,7 @@ function getDefaultList() {
 function printUsage() {
   console.log(`Usage:
   node src/cli.js create-list <name>
+  node src/cli.js init
   node src/cli.js add-alias <alias> <canonical-name>
   node src/cli.js add-item [list] <item[=qty]> [more-items...]
   node src/cli.js mark-bought [list] <item> [more-items...]
@@ -111,6 +112,9 @@ export function main(argv) {
     let result;
 
     switch (command) {
+      case 'init':
+        result = { ok: true, dbPath: getDefaultDbPath() };
+        break;
       case 'create-list':
         result = db.createList(args[0]);
         break;

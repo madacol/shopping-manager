@@ -1,7 +1,35 @@
 // @ts-check
 
 import path from 'node:path';
+import { mkdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+
+const DEFAULT_DATA_DIR = '.shopping-list';
+const DEFAULT_DB_FILE = 'shopping-lists.sqlite';
+
+/**
+ * @returns {string}
+ */
+export function getDefaultShoppingListDbPath() {
+  const explicitDbPath = process.env.SHOPPING_LIST_DB?.trim();
+  if (explicitDbPath) {
+    return explicitDbPath;
+  }
+
+  const dataDir = process.env.SHOPPING_LIST_DATA_DIR?.trim() || DEFAULT_DATA_DIR;
+  return path.join(
+    dataDir,
+    DEFAULT_DB_FILE
+  );
+}
+
+/**
+ * @param {string} dbPath
+ * @returns {void}
+ */
+function ensureDbParentDirectory(dbPath) {
+  mkdirSync(path.dirname(dbPath), { recursive: true });
+}
 
 /**
  * @typedef {import('node:sqlite').StatementSync} StatementSync
@@ -214,9 +242,10 @@ export class ShoppingListDb {
   statements;
 
   /**
-   * @param {string} [dbPath='shopping-lists.sqlite']
+   * @param {string} [dbPath]
    */
-  constructor(dbPath = 'shopping-lists.sqlite') {
+  constructor(dbPath = getDefaultShoppingListDbPath()) {
+    ensureDbParentDirectory(dbPath);
     this.db = new DatabaseSync(dbPath);
     this.db.exec('PRAGMA foreign_keys = ON;');
     this.db.exec('PRAGMA journal_mode = WAL;');

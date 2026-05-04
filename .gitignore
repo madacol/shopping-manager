@@ -1,4 +1,5 @@
 node_modules/
+.shopping-list/
 shopping-lists.sqlite
 shopping-lists.sqlite-shm
 shopping-lists.sqlite-wal

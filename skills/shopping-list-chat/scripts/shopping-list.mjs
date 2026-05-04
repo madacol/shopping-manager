@@ -1,7 +1,35 @@
 // @ts-check
 
 import { DatabaseSync } from 'node:sqlite';
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+
+const DEFAULT_DATA_DIR = '.shopping-list';
+const DEFAULT_DB_FILE = 'shopping-lists.sqlite';
+
+/**
+ * @returns {string}
+ */
+function getDefaultDbPath() {
+  const explicitDbPath = process.env.SHOPPING_LIST_DB?.trim();
+  if (explicitDbPath) {
+    return explicitDbPath;
+  }
+
+  const dataDir = process.env.SHOPPING_LIST_DATA_DIR?.trim() || DEFAULT_DATA_DIR;
+  return path.join(
+    dataDir,
+    DEFAULT_DB_FILE
+  );
+}
+
+/**
+ * @param {string} dbPath
+ * @returns {void}
+ */
+function ensureDbParentDirectory(dbPath) {
+  mkdirSync(path.dirname(dbPath), { recursive: true });
+}
 
 /**
  * @typedef {import('node:sqlite').StatementSync} StatementSync
@@ -120,6 +148,7 @@ class ShoppingListDb {
    * @param {string} dbPath
    */
   constructor(dbPath) {
+    ensureDbParentDirectory(dbPath);
     this.db = new DatabaseSync(dbPath);
     this.db.exec('PRAGMA foreign_keys = ON;');
     this.db.exec('PRAGMA journal_mode = WAL;');
@@ -1076,6 +1105,7 @@ function parseOptions(args) {
 
 function printUsage() {
   console.log(`Usage:
+  node skills/shopping-list-chat/scripts/shopping-list.mjs init
   node skills/shopping-list-chat/scripts/shopping-list.mjs add-item <item> [qty] [list] [--by <name>] [--media <ref>] [--note <text>]
   node skills/shopping-list-chat/scripts/shopping-list.mjs annotate-order <item> [list] [--by <name>] [--media <ref>] [--note <text>] [--clear-note]
   node skills/shopping-list-chat/scripts/shopping-list.mjs mark-pending <item> [list]
@@ -1093,7 +1123,8 @@ function printUsage() {
  */
 function main(argv) {
   const [command, ...rawArgs] = argv;
-  const db = new ShoppingListDb(process.env.SHOPPING_LIST_DB || 'shopping-lists.sqlite');
+  const dbPath = getDefaultDbPath();
+  const db = new ShoppingListDb(dbPath);
   const defaultList = process.env.SHOPPING_LIST_DEFAULT_LIST || 'supermercado';
   const { positionals, orderedBy, imageRef, note, clearNote } = parseOptions(rawArgs);
 
@@ -1102,6 +1133,9 @@ function main(argv) {
     let result;
 
     switch (command) {
+      case 'init':
+        result = { ok: true, dbPath };
+        break;
       case 'add-item':
         result = db.addItem(positionals[2] || defaultList, positionals[0], positionals[1] || 1, {
           orderedBy,

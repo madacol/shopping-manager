@@ -10,7 +10,7 @@ import os from 'node:os';
 
 import { main as cliMain } from '../src/cli.js';
 import { createAppServer } from '../src/server.js';
-import { ShoppingListDb } from '../src/shopping-list-db.js';
+import { getDefaultShoppingListDbPath, ShoppingListDb } from '../src/shopping-list-db.js';
 
 /**
  * @returns {string}
@@ -53,6 +53,29 @@ function runSkillCli(dbPath, args) {
 }
 
 /**
+ * @param {string} workspacePath
+ * @param {string[]} args
+ * @returns {any}
+ */
+function runSkillCliWithDefaultDb(workspacePath, args) {
+  const env = { ...process.env };
+  delete env.SHOPPING_LIST_DB;
+  delete env.SHOPPING_LIST_DATA_DIR;
+
+  return JSON.parse(
+    execFileSync(
+      process.execPath,
+      [path.resolve('skills/shopping-list-chat/scripts/shopping-list.mjs'), ...args],
+      {
+        cwd: workspacePath,
+        env,
+        encoding: 'utf8'
+      }
+    )
+  );
+}
+
+/**
  * @param {string} dbPath
  * @returns {Promise<{ server: import('node:http').Server, baseUrl: string }>}
  */
@@ -83,6 +106,46 @@ async function startServer(dbPath) {
 async function readResponseJson(response) {
   return response.json();
 }
+
+test('default database path is workspace-local data, not template data', () => {
+  const originalDbPath = process.env.SHOPPING_LIST_DB;
+  const originalDataDir = process.env.SHOPPING_LIST_DATA_DIR;
+
+  try {
+    delete process.env.SHOPPING_LIST_DB;
+    delete process.env.SHOPPING_LIST_DATA_DIR;
+
+    assert.equal(getDefaultShoppingListDbPath(), path.join('.shopping-list', 'shopping-lists.sqlite'));
+  } finally {
+    if (originalDbPath === undefined) {
+      delete process.env.SHOPPING_LIST_DB;
+    } else {
+      process.env.SHOPPING_LIST_DB = originalDbPath;
+    }
+    if (originalDataDir === undefined) {
+      delete process.env.SHOPPING_LIST_DATA_DIR;
+    } else {
+      process.env.SHOPPING_LIST_DATA_DIR = originalDataDir;
+    }
+  }
+});
+
+test('skill cli init creates the local workspace data directory and database', () => {
+  const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), 'shopping-workspace-'));
+  const expectedDbPath = path.join(workspacePath, '.shopping-list', 'shopping-lists.sqlite');
+
+  try {
+    const result = runSkillCliWithDefaultDb(workspacePath, ['init']);
+
+    assert.deepEqual(result, {
+      ok: true,
+      dbPath: path.join('.shopping-list', 'shopping-lists.sqlite')
+    });
+    assert.equal(fs.existsSync(expectedDbPath), true);
+  } finally {
+    fs.rmSync(workspacePath, { recursive: true, force: true });
+  }
+});
 
 test('aliases resolve to canonical items and writes create events', () => {
   const dbPath = createDbPath();
