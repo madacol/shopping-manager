@@ -12,7 +12,6 @@ Runtime data is not part of this repo. Each installed workspace keeps its own lo
 ## Docs
 
 - `WORKSPACE_INSTALL.md`: install the app into another chat workspace.
-- `DEPLOY_NOTES.md`: optional website/API deployment.
 - `skills/shopping-list-chat/SKILL.md`: runtime instructions for agents using the shopping-list skill.
 
 ## Runtime Data
