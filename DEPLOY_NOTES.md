@@ -1,31 +1,25 @@
 # Deploy Notes
 
-This workspace is wired directly to `shop.babyjarvis.com`.
+The website/API is optional. Deploy it only for workspaces that need a browser UI.
 
-- Static files in `public/` are served from disk on each request.
-  If you change `public/list.js`, `public/list.html`, or `public/styles.css`,
-  prod reflects that immediately.
-- Backend route changes in `src/server.js` are loaded into the long-running Node
-  process memory.
-  If you change API routes or server behavior, you must restart the service.
-
-Current prod service:
+Run the server from the workspace whose `.shopping-list/` data should be served:
 
 ```bash
-systemctl --user restart workspace-site-shop.service
+cd /path/to/chat-workspace
+node /path/to/shopping-manager/src/server.js
 ```
 
-Minimal prod smoke tests after server changes:
-
-1. Save a note from the item editor.
-2. Re-add an item from recent activity.
-
-Automated prod test:
+Or set the database path explicitly:
 
 ```bash
-npm run test:e2e:prod
+SHOPPING_LIST_DB=/path/to/chat-workspace/.shopping-list/shopping-lists.sqlite \
+  node /path/to/shopping-manager/src/server.js
 ```
 
-Prefer keeping and extending end-to-end tests when fixing regressions in this
-app. Future agents should read the existing E2E tests before guessing how prod
-behaves.
+Static files in `public/` are read from this repo. Runtime list data is read from the configured SQLite database.
+
+Useful checks after deployment:
+
+1. Add an item through the website.
+2. Mark an item bought through the website.
+3. Add an item through the chat CLI and refresh the website.

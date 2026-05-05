@@ -1,14 +1,15 @@
 {
-  "name": "shopping-list-db",
+  "name": "shopping-manager",
   "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
+    "init": "node skills/shopping-list-chat/scripts/shopping-list.mjs init",
     "start": "node src/server.js",
     "cli": "node src/cli.js",
     "test": "node --test",
     "check": "tsc --noEmit",
-    "test:e2e:prod": "playwright test e2e/prod-edit-route.spec.js"
+    "test:e2e": "playwright test e2e/edit-route.spec.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",

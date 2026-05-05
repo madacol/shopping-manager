@@ -1,39 +1,83 @@
-# Shopping List Workspace
+# Shopping Manager
 
-This workspace already has a dedicated skill for shopping-list operations:
+Reusable shopping-list manager for chat workspaces.
 
-- Skill: `skills/shopping-list-chat/SKILL.md`
+This repo contains two reusable surfaces:
 
-Read that skill before managing the shopping list from chat. It documents:
+- `skills/shopping-list-chat/`: the chat skill and authoritative chat CLI.
+- `src/server.js` plus `public/`: an optional website/API for viewing and editing the same list.
 
-- which script to run
-- how to add, remove, buy, and annotate items
-- how requester attribution works
-- how image association works
-- the distinction between the chat script and the simpler web-app flow
+Runtime data is not part of this repo. Each installed workspace keeps its own local data under `.shopping-list/`.
 
-The local workspace data lives under `.shopping-list/`.
+## Data Layout
 
-- Default database: `.shopping-list/shopping-lists.sqlite`
-- Override database path: `SHOPPING_LIST_DB=/path/to/shopping-lists.sqlite`
-- Initialize a workspace database: `node skills/shopping-list-chat/scripts/shopping-list.mjs init`
+Default runtime data:
 
-The database is runtime data, not part of the reusable skill/app template. The skill, CLI, server, and web UI should be reusable; each chat workspace should keep its own `.shopping-list/` folder.
+```text
+.shopping-list/
+  shopping-lists.sqlite
+```
 
-## Install Into Another Chat Workspace
+The database is created automatically on first use:
 
-From the target chat workspace:
+```bash
+npm run init
+```
+
+Override the database path when needed:
+
+```bash
+SHOPPING_LIST_DB=/path/to/shopping-lists.sqlite npm run init
+```
+
+## Skill Install
+
+From a target chat workspace, symlink the skill and initialize local data:
 
 ```bash
 mkdir -p .agents/skills .shopping-list
-ln -s "/home/mada/chat-workspaces/Por comprar--120363164311953924@g.us/skills/shopping-list-chat" .agents/skills/shopping-list-chat
+ln -s "/path/to/shopping-manager/skills/shopping-list-chat" .agents/skills/shopping-list-chat
 node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs init
 ```
 
-Run the website for that workspace with:
+The skill code comes from this repo. The database is created in the target workspace.
+
+## Website
+
+The website is optional. Run it from the target workspace when you want a web UI over that workspace's local DB:
 
 ```bash
-node "/home/mada/chat-workspaces/Por comprar--120363164311953924@g.us/src/server.js"
+cd /path/to/target-chat-workspace
+node "/path/to/shopping-manager/src/server.js"
 ```
 
-The server serves the reusable `public/` files from this workspace, but reads and writes the target workspace's `.shopping-list/shopping-lists.sqlite` because the DB path is resolved from the process working directory.
+Or run it with an explicit DB:
+
+```bash
+SHOPPING_LIST_DB=/path/to/target-chat-workspace/.shopping-list/shopping-lists.sqlite \
+  node "/path/to/shopping-manager/src/server.js"
+```
+
+## Development
+
+```bash
+npm install
+npm run check
+npm test
+```
+
+The default web server listens on `127.0.0.1:3000`. Override with `HOST` and `PORT`.
+
+Optional browser test:
+
+```bash
+npm run test:e2e
+```
+
+## Local Aliases
+
+List and item aliases are runtime data. Add them with the CLI instead of hardcoding them in the skill:
+
+```bash
+node skills/shopping-list-chat/scripts/shopping-list.mjs add-list-alias dunnes supermercado
+```
