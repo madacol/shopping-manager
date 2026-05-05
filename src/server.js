@@ -258,15 +258,11 @@ function resolveMediaPath(storedPath) {
 }
 
 /**
- * @param {string | null} mimeType
+ * @param {'image' | 'audio' | 'video'} kind
  * @param {string} mediaPath
- * @returns {string}
+ * @returns {string | null}
  */
-function getContentType(mimeType, mediaPath) {
-  if (mimeType) {
-    return mimeType;
-  }
-
+function inferContentType(kind, mediaPath) {
   switch (path.extname(mediaPath).toLowerCase()) {
     case '.jpg':
     case '.jpeg':
@@ -295,14 +291,23 @@ function getContentType(mimeType, mediaPath) {
     case '.flac':
       return 'audio/flac';
     case '.webm':
-      return 'audio/webm';
+      return kind === 'video' ? 'video/webm' : 'audio/webm';
     case '.mp4':
       return 'video/mp4';
     case '.mov':
       return 'video/quicktime';
     default:
-      return 'application/octet-stream';
+      return null;
   }
+}
+
+/**
+ * @param {{ kind: 'image' | 'audio' | 'video', mime_type: string | null }} media
+ * @param {string} mediaPath
+ * @returns {string}
+ */
+function getContentType(media, mediaPath) {
+  return media.mime_type ?? inferContentType(media.kind, mediaPath) ?? 'application/octet-stream';
 }
 
 /**
@@ -332,7 +337,7 @@ async function handleRequest(request, response, db, publicDir) {
     const mediaPath = resolveMediaPath(media.path);
     const body = await readFile(mediaPath);
     response.writeHead(200, {
-      'content-type': getContentType(media.mime_type, mediaPath),
+      'content-type': getContentType(media, mediaPath),
       'cache-control': 'no-store',
       'content-length': body.byteLength
     });

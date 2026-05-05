@@ -722,6 +722,58 @@ test('http api keeps webm chat media as audio attachments', async () => {
   }
 });
 
+test('http api keeps oga chat media as audio attachments', async () => {
+  const dbPath = createDbPath();
+  const audioPath = path.join(os.tmpdir(), `shopping-audio-${Date.now()}.oga`);
+
+  fs.writeFileSync(audioPath, 'fake-oga-audio');
+
+  runSkillCli(dbPath, [
+    'add-item',
+    'avena',
+    '1',
+    'supermercado',
+    '--by',
+    'Juan',
+    '--media',
+    audioPath,
+    '--note',
+    'nota de voz'
+  ]);
+
+  const { server, baseUrl } = await startServer(dbPath);
+
+  try {
+    const snapshotResponse = await fetch(`${baseUrl}/api/lists/supermercado`);
+    const snapshot = await readResponseJson(snapshotResponse);
+    const item = snapshot.items.find(
+      /** @param {{ name: string, orders?: any[] }} candidate */
+      (candidate) => candidate.name === 'avena'
+    );
+    const media = item?.orders[0]?.media[0];
+
+    assert.equal(media?.kind, 'audio');
+    assert.equal(media?.mime_type, 'audio/ogg');
+
+    const audioResponse = await fetch(`${baseUrl}${media.url}`);
+    assert.equal(audioResponse.status, 200);
+    assert.equal(audioResponse.headers.get('content-type'), 'audio/ogg');
+    assert.equal(await audioResponse.text(), 'fake-oga-audio');
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(undefined);
+      });
+    });
+    fs.rmSync(dbPath, { force: true });
+    fs.rmSync(audioPath, { force: true });
+  }
+});
+
 test('skill cli can clear an order note explicitly', () => {
   const dbPath = createDbPath();
 

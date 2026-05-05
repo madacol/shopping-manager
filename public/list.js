@@ -25,6 +25,9 @@ const state = {
 };
 
 const $ = (selector) => document.querySelector(selector);
+const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.ogg', '.oga', '.opus', '.wav', '.aac', '.flac', '.webm']);
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg']);
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.mkv', '.avi', '.webm']);
 const pageTitle = $('#page-title');
 const syncStatus = $('#sync-status');
 const addForm = $('#add-form');
@@ -47,18 +50,39 @@ function getMediaExtension(media) {
   return dotIndex === -1 ? '' : pathname.slice(dotIndex).toLowerCase();
 }
 
-function isAudioMedia(media) {
+function getMediaDisplayKind(media) {
+  const extension = getMediaExtension(media);
   const mimeType = typeof media.mime_type === 'string' ? media.mime_type.toLowerCase() : '';
-  return (
-    media.kind === 'audio' ||
-    mimeType.startsWith('audio/') ||
-    ['.mp3', '.m4a', '.ogg', '.oga', '.opus', '.wav', '.aac', '.flac', '.webm'].includes(getMediaExtension(media))
-  );
-}
 
-function isImageMedia(media) {
-  const mimeType = typeof media.mime_type === 'string' ? media.mime_type.toLowerCase() : '';
-  return media.kind === 'image' || mimeType.startsWith('image/');
+  if (mimeType.startsWith('audio/')) {
+    return 'audio';
+  }
+
+  if (mimeType.startsWith('image/')) {
+    return 'image';
+  }
+
+  if (mimeType.startsWith('video/')) {
+    return 'video';
+  }
+
+  if (media.kind === 'audio' || media.kind === 'image' || media.kind === 'video') {
+    return media.kind;
+  }
+
+  if (AUDIO_EXTENSIONS.has(extension)) {
+    return 'audio';
+  }
+
+  if (IMAGE_EXTENSIONS.has(extension)) {
+    return 'image';
+  }
+
+  if (VIDEO_EXTENSIONS.has(extension)) {
+    return 'video';
+  }
+
+  return 'unknown';
 }
 
 function openImageViewer(src, alt) {
@@ -92,9 +116,7 @@ function openImageViewer(src, alt) {
   }
 
   overlay.addEventListener('click', (event) => {
-    if (event.target === overlay || event.target === closeButton) {
-      close();
-    }
+    close();
   });
 
   document.addEventListener('keydown', onKeydown);
@@ -210,7 +232,9 @@ function renderMedia(media) {
     return null;
   }
 
-  if (isImageMedia(media)) {
+  const displayKind = getMediaDisplayKind(media);
+
+  if (displayKind === 'image') {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'order-media-button';
@@ -230,7 +254,7 @@ function renderMedia(media) {
     return button;
   }
 
-  if (isAudioMedia(media)) {
+  if (displayKind === 'audio') {
     const audio = document.createElement('audio');
     audio.className = 'order-media order-media--audio';
     audio.controls = true;
@@ -242,7 +266,7 @@ function renderMedia(media) {
     return audio;
   }
 
-  if (media.kind === 'video') {
+  if (displayKind === 'video') {
     const video = document.createElement('video');
     video.className = 'order-media order-media--video';
     video.controls = true;

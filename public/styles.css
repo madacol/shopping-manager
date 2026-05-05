@@ -455,6 +455,8 @@ input {
 
 .order-media--audio {
   min-height: 44px;
+  height: 44px;
+  max-height: 44px;
 }
 
 .image-viewer {
@@ -465,6 +467,7 @@ input {
   place-items: center;
   padding: 16px;
   background: rgba(0, 0, 0, 0.9);
+  cursor: zoom-out;
 }
 
 .image-viewer__image {
@@ -472,6 +475,7 @@ input {
   max-height: 100%;
   object-fit: contain;
   border-radius: 8px;
+  cursor: zoom-out;
 }
 
 .image-viewer__close {

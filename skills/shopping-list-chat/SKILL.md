@@ -79,7 +79,7 @@ Use `node skills/shopping-list-chat/scripts/shopping-list.mjs ...`.
 - The practical active-order key is `(list, canonical item, ordered_by, status=pending)`.
 - `add-item ... --by ... --media ...` creates or updates that person's pending order row and writes the matching `order_media` row.
 - `annotate-order ... --by ... --media ...` updates an existing pending order for that same requester and writes the matching `order_media` row.
-- Supported media is inferred from file extension: images (`.jpg`, `.png`, `.webp`), audio (`.ogg`, `.mp3`, `.wav`, `.m4a`), and video (`.mp4`, `.mov`, `.webm`).
+- Supported media is inferred from file extension: images (`.jpg`, `.png`, `.webp`), audio (`.ogg`, `.oga`, `.opus`, `.mp3`, `.wav`, `.m4a`, `.aac`, `.flac`, `.webm`), and video (`.mp4`, `.mov`, `.webm`).
 - `items.qty` is the sum of pending `item_orders.qty` for the current grouped item.
 - Bought/removed orders keep their own media in history and must not leak into a new pending order for the same item.
 
