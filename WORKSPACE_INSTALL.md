@@ -41,7 +41,7 @@ node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs init
 
 The `init` command creates this workspace's local database.
 
-For the optional browser UI, follow `DEPLOY_NOTES.md`.
+If you want to add the optional browser UI, follow `DEPLOY_NOTES.md`.
 
 ## Use
 
