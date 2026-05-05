@@ -28,8 +28,18 @@ used.
 
 ## Setup
 
-Follow the `Skill Install` section in `README.md` from the target workspace.
-After setup, initialize the target workspace database before using the skill.
+From the target workspace:
+
+```bash
+mkdir -p .agents/apps .agents/skills .shopping-list
+
+ln -s "/path/to/shopping-manager" .agents/apps/shopping-manager
+ln -s "../apps/shopping-manager/skills/shopping-list-chat" .agents/skills/shopping-list-chat
+
+node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs init
+```
+
+The `init` command creates this workspace's local database.
 
 For the optional browser UI, follow `DEPLOY_NOTES.md`.
 
@@ -37,3 +47,9 @@ For the optional browser UI, follow `DEPLOY_NOTES.md`.
 
 Workspace-specific data, such as aliases, belongs in the local database, not in
 the linked skill files.
+
+Example:
+
+```bash
+node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs add-list-alias dunnes supermercado
+```
