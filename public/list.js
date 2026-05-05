@@ -283,16 +283,28 @@ function getVisibleOrders(item) {
     return [];
   }
 
-  return item.orders.filter((order) => {
-    const hasIdentity = order.ordered_by !== 'unknown';
-    const hasNote = Boolean(order.note && order.note !== item.note);
-    const hasMedia = Array.isArray(order.media) && order.media.length > 0;
-    return hasIdentity || hasNote || hasMedia;
-  });
+  return item.orders.filter((order) => Number(order.qty) > 0);
 }
 
 function itemHasMedia(item) {
   return getVisibleOrders(item).some((order) => Array.isArray(order.media) && order.media.length > 0);
+}
+
+function getOrderCountText(item) {
+  const orderCount = getVisibleOrders(item).length;
+  const fallbackCount = orderCount === 0 && Number(item.qty) > 0 ? 1 : orderCount;
+  return `${fallbackCount} ${fallbackCount === 1 ? 'pedido' : 'pedidos'}`;
+}
+
+function getOrderStatusText(status) {
+  switch (status) {
+    case 'bought':
+      return 'comprado';
+    case 'removed':
+      return 'quitado';
+    default:
+      return 'pendiente';
+  }
 }
 
 function renderOrders(item) {
@@ -305,27 +317,43 @@ function renderOrders(item) {
   const details = document.createElement('div');
   details.className = 'item-details';
 
+  const heading = document.createElement('div');
+  heading.className = 'orders-heading';
+
+  const label = document.createElement('span');
+  label.textContent = 'Pedidos';
+
+  const summary = document.createElement('span');
+  summary.textContent = `${getOrderCountText(item)} ${getOrderStatusText(item.status)}`;
+
+  heading.append(label, summary);
+  details.append(heading);
+
   for (const order of visibleOrders) {
     const card = document.createElement('div');
     card.className = 'order-card';
 
-    const showHeader = visibleOrders.length > 1 || order.ordered_by !== 'unknown';
+    const top = document.createElement('div');
+    top.className = 'order-topline';
 
-    if (showHeader) {
-      const top = document.createElement('div');
-      top.className = 'order-topline';
+    const by = document.createElement('span');
+    by.className = 'order-by';
+    by.textContent = order.ordered_by === 'unknown' ? 'Pedido' : order.ordered_by;
 
-      const by = document.createElement('span');
-      by.className = 'order-by';
-      by.textContent = order.ordered_by === 'unknown' ? 'Pedido' : order.ordered_by;
+    const meta = document.createElement('span');
+    meta.className = 'order-meta';
 
-      const qty = document.createElement('span');
-      qty.className = 'order-qty';
-      qty.textContent = `x${fmtQty(order.qty)}`;
+    const qty = document.createElement('span');
+    qty.className = 'order-qty';
+    qty.textContent = `x${fmtQty(order.qty)}`;
 
-      top.append(by, qty);
-      card.append(top);
-    }
+    const status = document.createElement('span');
+    status.className = `order-status order-status--${item.status}`;
+    status.textContent = getOrderStatusText(item.status);
+
+    meta.append(qty, status);
+    top.append(by, meta);
+    card.append(top);
 
     if (order.note && order.note !== item.note) {
       const note = document.createElement('p');
@@ -378,7 +406,7 @@ function renderItem(item, mode) {
   row.className = `item-row item-row--${mode}`;
 
   if (mode === 'pending') {
-    const removeButton = makeIconButton('remove', 'danger', 'Quitar');
+    const removeButton = makeIconButton('remove', 'danger', 'Quitar pedidos');
     removeButton.dataset.qty = String(item.qty);
     if (isBusy) {
       removeButton.disabled = true;
@@ -428,6 +456,11 @@ function renderItem(item, mode) {
     subline.append(noteEl);
   }
 
+  const orderSummaryEl = document.createElement('span');
+  orderSummaryEl.className = 'item-order-summary';
+  orderSummaryEl.textContent = `${getOrderCountText(item)} ${getOrderStatusText(item.status)}`;
+  subline.append(orderSummaryEl);
+
   if (itemHasMedia(item)) {
     const attachmentEl = document.createElement('span');
     attachmentEl.className = 'item-attachment';
@@ -453,8 +486,8 @@ function renderItem(item, mode) {
 
   const rightButton =
     mode === 'pending'
-      ? makeIconButton('bought', 'success', 'Listo')
-      : makeIconButton('pending', item.status === 'removed' ? 'danger' : 'accent', 'Reagregar');
+      ? makeIconButton('bought', 'success', 'Marcar pedidos comprados')
+      : makeIconButton('pending', item.status === 'removed' ? 'danger' : 'accent', 'Reagregar pedidos');
 
   rightButton.dataset.action = mode === 'pending' ? 'bought' : 'pending';
   if (isBusy) {
@@ -683,10 +716,10 @@ function handleListClick(event) {
 
   switch (button.dataset.action) {
     case 'remove':
-      send('remove', { item: itemName, qty: Number(button.dataset.qty) }, itemName);
+      send('remove', { item: itemName, qty: Number(button.dataset.qty) }, itemName, 'Quitando pedidos...');
       break;
     case 'bought':
-      send('bought', { item: itemName }, itemName);
+      send('bought', { item: itemName }, itemName, 'Marcando pedidos...');
       break;
     case 'pending':
       send('pending', { item: itemName }, itemName, 'Reagregando...');

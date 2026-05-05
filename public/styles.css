@@ -380,10 +380,33 @@ input {
   line-height: 1;
 }
 
+.item-order-summary {
+  color: rgba(236, 232, 224, 0.72);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
 .item-details {
   display: grid;
   gap: 10px;
   padding: 0 16px 16px;
+}
+
+.orders-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.orders-heading span:last-child {
+  color: rgba(236, 232, 224, 0.62);
+  text-align: right;
+  text-transform: none;
 }
 
 .order-card {
@@ -402,6 +425,7 @@ input {
 
 .order-by {
   min-width: 0;
+  flex: 1;
   color: var(--text);
   font-size: 0.8rem;
   font-weight: 700;
@@ -413,6 +437,35 @@ input {
   color: var(--muted);
   font-size: 0.73rem;
   font-weight: 700;
+}
+
+.order-meta {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.order-status {
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.order-status--pending {
+  background: rgba(240, 115, 74, 0.14);
+  color: var(--accent);
+}
+
+.order-status--bought {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.order-status--removed {
+  background: var(--red-soft);
+  color: var(--red);
 }
 
 .order-note {

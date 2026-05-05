@@ -816,6 +816,7 @@ test('skill cli can clear an order note explicitly', () => {
 test('web db mutations can update mixed-case items created by the chat skill', () => {
   const dbPath = createDbPath();
   const itemName = 'bananas pequeñas ligeramente verdes para lunch box de Gianna';
+  const lookupName = itemName.toLowerCase();
 
   try {
     runSkillCli(dbPath, ['add-item', itemName, '1', 'supermercado']);
@@ -823,7 +824,7 @@ test('web db mutations can update mixed-case items created by the chat skill', (
     const db = new ShoppingListDb(dbPath);
     try {
       const bought = db.markBought('supermercado', itemName);
-      assert.equal(bought.item, itemName);
+      assert.equal(bought.item, lookupName);
       assert.equal(bought.status, 'bought');
 
       assert.deepEqual(
@@ -831,10 +832,90 @@ test('web db mutations can update mixed-case items created by the chat skill', (
           name: item.name,
           status: item.status
         })),
-        [{ name: itemName, status: 'bought' }]
+        [{ name: lookupName, status: 'bought' }]
       );
     } finally {
       db.close();
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('web db mutations prefer the pending order when case variants already exist', () => {
+  const dbPath = createDbPath();
+
+  try {
+    const db = new ShoppingListDb(dbPath);
+    try {
+      db.addItem('supermercado', 'banana');
+      db.markBought('supermercado', 'banana');
+    } finally {
+      db.close();
+    }
+
+    runSkillCli(dbPath, ['add-item', 'Banana', '1', 'supermercado']);
+
+    const updatedDb = new ShoppingListDb(dbPath);
+    try {
+      const bought = updatedDb.markBought('supermercado', 'Banana');
+      assert.equal(bought.item, 'banana');
+      assert.equal(bought.status, 'bought');
+      assert.equal(bought.qty, 2);
+      assert.deepEqual(updatedDb.showList('supermercado').items, []);
+      assert.deepEqual(
+        updatedDb.showList('supermercado', 'bought').items.map((item) => item.name),
+        ['banana']
+      );
+    } finally {
+      updatedDb.close();
+    }
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('db startup merges existing item names that only differ by case', () => {
+  const dbPath = createDbPath();
+
+  try {
+    const db = new ShoppingListDb(dbPath);
+    try {
+      const list = db.createList('supermercado');
+      const insertItem = db.db.prepare(`
+        INSERT INTO items(list_id, canonical_name, status, updated_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      `);
+      const insertOrder = db.db.prepare(`
+        INSERT INTO item_orders(item_id, ordered_by, status, qty, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `);
+
+      const lower = insertItem.run(list.id, 'banana', 'bought');
+      insertOrder.run(Number(lower.lastInsertRowid), 'unknown', 'bought', 1);
+      const upper = insertItem.run(list.id, 'Banana', 'pending');
+      insertOrder.run(Number(upper.lastInsertRowid), 'unknown', 'pending', 1);
+    } finally {
+      db.close();
+    }
+
+    const migratedDb = new ShoppingListDb(dbPath);
+    try {
+      const itemRows = /** @type {Array<{ canonical_name: string }>} */ (
+        migratedDb.db.prepare(`
+          SELECT canonical_name
+          FROM items
+          WHERE list_id = (SELECT id FROM lists WHERE name = 'supermercado')
+        `).all()
+      );
+      assert.deepEqual(itemRows.map((item) => item.canonical_name), ['banana']);
+
+      const bought = migratedDb.markBought('supermercado', 'Banana');
+      assert.equal(bought.item, 'banana');
+      assert.equal(bought.qty, 2);
+      assert.equal(migratedDb.showList('supermercado').items.length, 0);
+    } finally {
+      migratedDb.close();
     }
   } finally {
     fs.rmSync(dbPath, { force: true });
@@ -862,7 +943,7 @@ test('skill cli writes media rows visible to an already-running web server', asy
     const snapshot = await readResponseJson(snapshotResponse);
     const item = snapshot.items.find(
       /** @param {{ name: string, orders?: any[] }} entry */
-      (entry) => entry.name === 'Old Spice Nightpanther deodorant stick'
+      (entry) => entry.name === 'old spice nightpanther deodorant stick'
     );
 
     const mediaUrl = item?.orders[0]?.media[0]?.url;

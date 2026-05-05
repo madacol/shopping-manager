@@ -149,6 +149,8 @@ function ensureDbParentDirectory(dbPath) {
  * @property {StatementSync} ensureItem
  * @property {StatementSync} getItemByCanonicalName
  * @property {StatementSync} getItemByCanonicalNameNoCase
+ * @property {StatementSync} getItemByCanonicalNameWithOrderStatus
+ * @property {StatementSync} getItemByCanonicalNameNoCaseWithOrderStatus
  * @property {StatementSync} getItemById
  * @property {StatementSync} renameItem
  * @property {StatementSync} insertEvent
@@ -256,6 +258,7 @@ export class ShoppingListDb {
     this.#ensureOrderStatusColumn();
     this.#migrateOrderUniquenessForStatus();
     this.#ensureMediaColumn('mime_type', 'TEXT');
+    this.#migrateCaseInsensitiveItemNames();
     this.statements = this.#prepareStatements();
     this.#backfillOrders();
     this.#migrateLegacyOrderMedia();
@@ -297,7 +300,7 @@ export class ShoppingListDb {
   resolveCanonicalName(rawItem) {
     const normalizedItem = this.#normalizeItemName(rawItem);
     const alias = /** @type {AliasRow | undefined} */ (this.statements.resolveAlias.get(normalizedItem));
-    return alias?.canonical_name ?? normalizedItem;
+    return (alias?.canonical_name ?? normalizedItem).toLowerCase();
   }
 
   /**
@@ -310,6 +313,36 @@ export class ShoppingListDb {
       this.statements.getItemByCanonicalName.get(listId, canonicalName) ??
         this.statements.getItemByCanonicalNameNoCase.get(listId, canonicalName)
     );
+  }
+
+  /**
+   * @param {number} listId
+   * @param {string} canonicalName
+   * @param {'pending' | 'bought' | 'removed'} orderStatus
+   * @returns {ItemRow | undefined}
+   */
+  #getItemByCanonicalNameWithOrderStatus(listId, canonicalName, orderStatus) {
+    return /** @type {ItemRow | undefined} */ (
+      this.statements.getItemByCanonicalNameWithOrderStatus.get(listId, canonicalName, orderStatus) ??
+        this.statements.getItemByCanonicalNameNoCaseWithOrderStatus.get(listId, canonicalName, orderStatus)
+    );
+  }
+
+  /**
+   * @param {number} listId
+   * @param {string} canonicalName
+   * @param {('pending' | 'bought' | 'removed')[]} orderStatuses
+   * @returns {ItemRow | undefined}
+   */
+  #getItemByCanonicalNameWithAnyOrderStatus(listId, canonicalName, orderStatuses) {
+    for (const orderStatus of orderStatuses) {
+      const item = this.#getItemByCanonicalNameWithOrderStatus(listId, canonicalName, orderStatus);
+      if (item !== undefined) {
+        return item;
+      }
+    }
+
+    return undefined;
   }
 
   /**
@@ -407,8 +440,8 @@ export class ShoppingListDb {
 
     return this.#transaction(() => {
       const list = this.createList(normalizedListName);
-      const requestedCanonicalName = this.resolveCanonicalName(rawItem).toLowerCase();
-      const item = this.#getItemByCanonicalName(list.id, requestedCanonicalName);
+      const requestedCanonicalName = this.resolveCanonicalName(rawItem);
+      const item = this.#getItemByCanonicalNameWithOrderStatus(list.id, requestedCanonicalName, 'pending');
 
       if (item === undefined) {
         throw new Error(`Item not found: ${requestedCanonicalName}`);
@@ -472,8 +505,8 @@ export class ShoppingListDb {
 
     return this.#transaction(() => {
       const list = this.createList(normalizedListName);
-      const requestedCanonicalName = this.resolveCanonicalName(rawItem).toLowerCase();
-      const item = this.#getItemByCanonicalName(list.id, requestedCanonicalName);
+      const requestedCanonicalName = this.resolveCanonicalName(rawItem);
+      const item = this.#getItemByCanonicalNameWithOrderStatus(list.id, requestedCanonicalName, 'pending');
 
       if (item === undefined) {
         throw new Error(`Item not found: ${requestedCanonicalName}`);
@@ -553,8 +586,8 @@ export class ShoppingListDb {
 
     return this.#transaction(() => {
       const list = this.createList(normalizedListName);
-      const requestedCurrentCanonicalName = this.resolveCanonicalName(currentRawItem).toLowerCase();
-      const item = this.#getItemByCanonicalName(list.id, requestedCurrentCanonicalName);
+      const requestedCurrentCanonicalName = this.resolveCanonicalName(currentRawItem);
+      const item = this.#getItemByCanonicalNameWithOrderStatus(list.id, requestedCurrentCanonicalName, 'pending');
 
       if (item === undefined) {
         throw new Error(`Item not found: ${requestedCurrentCanonicalName}`);
@@ -805,6 +838,42 @@ export class ShoppingListDb {
         ORDER BY id
         LIMIT 1
       `),
+      getItemByCanonicalNameWithOrderStatus: this.db.prepare(`
+        SELECT items.id,
+               items.list_id,
+               items.canonical_name,
+               item_orders.status,
+               items.note,
+               items.created_at,
+               MAX(item_orders.updated_at) AS updated_at
+        FROM items
+        JOIN item_orders ON item_orders.item_id = items.id
+        WHERE items.list_id = ?
+          AND items.canonical_name = ?
+          AND item_orders.status = ?
+          AND item_orders.qty > 0
+        GROUP BY items.id, item_orders.status
+        ORDER BY MAX(item_orders.updated_at) DESC, items.id
+        LIMIT 1
+      `),
+      getItemByCanonicalNameNoCaseWithOrderStatus: this.db.prepare(`
+        SELECT items.id,
+               items.list_id,
+               items.canonical_name,
+               item_orders.status,
+               items.note,
+               items.created_at,
+               MAX(item_orders.updated_at) AS updated_at
+        FROM items
+        JOIN item_orders ON item_orders.item_id = items.id
+        WHERE items.list_id = ?
+          AND lower(items.canonical_name) = lower(?)
+          AND item_orders.status = ?
+          AND item_orders.qty > 0
+        GROUP BY items.id, item_orders.status
+        ORDER BY MAX(item_orders.updated_at) DESC, items.id
+        LIMIT 1
+      `),
       getItemById: this.db.prepare(`
         SELECT id, list_id, canonical_name, status, note, created_at, updated_at
         FROM items
@@ -1013,8 +1082,10 @@ export class ShoppingListDb {
 
     return this.#transaction(() => {
       const list = this.createList(normalizedListName);
-      const requestedCanonicalName = this.resolveCanonicalName(rawItem).toLowerCase();
-      const item = this.#getItemByCanonicalName(list.id, requestedCanonicalName);
+      const requestedCanonicalName = this.resolveCanonicalName(rawItem);
+      /** @type {('pending' | 'bought' | 'removed')[]} */
+      const sourceStatuses = status === 'pending' ? ['bought', 'removed'] : ['pending'];
+      const item = this.#getItemByCanonicalNameWithAnyOrderStatus(list.id, requestedCanonicalName, sourceStatuses);
 
       if (item === undefined) {
         throw new Error(`Item not found: ${requestedCanonicalName}`);
@@ -1172,6 +1243,74 @@ export class ShoppingListDb {
       }
 
       this.statements.insertOrderMedia.run(row.id, inferMediaKind(row.image_ref), row.image_ref, inferMimeType(row.image_ref));
+    }
+  }
+
+  /**
+   * @returns {void}
+   */
+  #migrateCaseInsensitiveItemNames() {
+    const groups = /** @type {Array<{ list_id: number, lookup_name: string }>} */ (
+      this.db.prepare(`
+        SELECT list_id, lower(canonical_name) AS lookup_name
+        FROM items
+        GROUP BY list_id, lower(canonical_name)
+        HAVING COUNT(*) > 1 OR canonical_name <> lower(canonical_name)
+      `).all()
+    );
+
+    if (groups.length === 0) {
+      return;
+    }
+
+    const getGroupItems = this.db.prepare(`
+      SELECT id, canonical_name
+      FROM items
+      WHERE list_id = ? AND lower(canonical_name) = ?
+      ORDER BY CASE WHEN canonical_name = ? THEN 0 ELSE 1 END, id
+    `);
+    const moveOrders = this.db.prepare('UPDATE item_orders SET item_id = ? WHERE item_id = ?');
+    const moveEvents = this.db.prepare('UPDATE events SET item_id = ? WHERE item_id = ?');
+    const deleteItem = this.db.prepare('DELETE FROM items WHERE id = ?');
+    const normalizeItem = this.db.prepare(`
+      UPDATE items
+      SET canonical_name = ?,
+          status = CASE
+            WHEN EXISTS (
+              SELECT 1 FROM item_orders WHERE item_id = ? AND status = 'pending' AND qty > 0
+            ) THEN 'pending'
+            WHEN EXISTS (
+              SELECT 1 FROM item_orders WHERE item_id = ? AND status = 'bought' AND qty > 0
+            ) THEN 'bought'
+            ELSE 'removed'
+          END,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `);
+
+    this.db.exec('BEGIN');
+    try {
+      for (const group of groups) {
+        const items = /** @type {Array<{ id: number, canonical_name: string }>} */ (
+          getGroupItems.all(group.list_id, group.lookup_name, group.lookup_name)
+        );
+        const target = items[0];
+        if (target === undefined) {
+          continue;
+        }
+
+        for (const duplicate of items.slice(1)) {
+          moveOrders.run(target.id, duplicate.id);
+          moveEvents.run(target.id, duplicate.id);
+          deleteItem.run(duplicate.id);
+        }
+
+        normalizeItem.run(group.lookup_name, target.id, target.id, target.id);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
     }
   }
 

@@ -158,6 +158,7 @@ class ShoppingListDb {
     this.#ensureOrderColumn('note', 'TEXT');
     this.#ensureOrderStatusColumn();
     this.#migrateOrderUniquenessForStatus();
+    this.#migrateCaseInsensitiveItemNames();
     this.statements = this.#prepareStatements();
     this.#migrateSchema();
   }
@@ -202,7 +203,7 @@ class ShoppingListDb {
     const row = /** @type {{ canonical_name: string } | undefined} */ (
       this.statements.resolveItemAlias.get(normalized)
     );
-    return row?.canonical_name ?? normalized;
+    return (row?.canonical_name ?? normalized).toLowerCase();
   }
 
   /**
@@ -211,8 +212,8 @@ class ShoppingListDb {
    * @returns {{ ok: true, alias: string, canonicalName: string }}
    */
   addAlias(alias, canonicalName) {
-    const normalizedAlias = normalizeName(alias);
-    const normalizedCanonicalName = normalizeName(canonicalName);
+    const normalizedAlias = normalizeName(alias).toLowerCase();
+    const normalizedCanonicalName = normalizeName(canonicalName).toLowerCase();
     this.statements.upsertItemAlias.run(normalizedAlias, normalizedCanonicalName);
     return { ok: true, alias: normalizedAlias, canonicalName: normalizedCanonicalName };
   }
@@ -725,6 +726,81 @@ class ShoppingListDb {
     }
 
     return false;
+  }
+
+  #migrateCaseInsensitiveItemNames() {
+    const groups = /** @type {Array<{ list_id: number, lookup_name: string }>} */ (
+      this.db.prepare(`
+        SELECT list_id, lower(canonical_name) AS lookup_name
+        FROM items
+        GROUP BY list_id, lower(canonical_name)
+        HAVING COUNT(*) > 1 OR canonical_name <> lower(canonical_name)
+      `).all()
+    );
+
+    if (groups.length === 0) {
+      return;
+    }
+
+    const getGroupItems = this.db.prepare(`
+      SELECT id, canonical_name
+      FROM items
+      WHERE list_id = ? AND lower(canonical_name) = ?
+      ORDER BY CASE WHEN canonical_name = ? THEN 0 ELSE 1 END, id
+    `);
+    const moveOrders = this.db.prepare('UPDATE item_orders SET item_id = ? WHERE item_id = ?');
+    const moveEvents = this.db.prepare('UPDATE events SET item_id = ? WHERE item_id = ?');
+    const deleteItem = this.db.prepare('DELETE FROM items WHERE id = ?');
+    const normalizeItem = this.db.prepare(`
+      UPDATE items
+      SET canonical_name = ?,
+          status = CASE
+            WHEN EXISTS (
+              SELECT 1 FROM item_orders WHERE item_id = ? AND status = 'pending' AND qty > 0
+            ) THEN 'pending'
+            WHEN EXISTS (
+              SELECT 1 FROM item_orders WHERE item_id = ? AND status = 'bought' AND qty > 0
+            ) THEN 'bought'
+            ELSE 'removed'
+          END,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `);
+    const syncQty = this.db.prepare(`
+      UPDATE items
+      SET qty = COALESCE((
+        SELECT SUM(qty)
+        FROM item_orders
+        WHERE item_id = ? AND status = items.status
+      ), 0)
+      WHERE id = ?
+    `);
+
+    this.db.exec('BEGIN');
+    try {
+      for (const group of groups) {
+        const items = /** @type {Array<{ id: number, canonical_name: string }>} */ (
+          getGroupItems.all(group.list_id, group.lookup_name, group.lookup_name)
+        );
+        const target = items[0];
+        if (target === undefined) {
+          continue;
+        }
+
+        for (const duplicate of items.slice(1)) {
+          moveOrders.run(target.id, duplicate.id);
+          moveEvents.run(target.id, duplicate.id);
+          deleteItem.run(duplicate.id);
+        }
+
+        normalizeItem.run(group.lookup_name, target.id, target.id, target.id);
+        syncQty.run(target.id, target.id);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   /**
