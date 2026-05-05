@@ -1,12 +1,6 @@
 {
   "subdomain": "shopping-manager",
-  "proxy": {
-    "target": "127.0.0.1:3000"
-  },
   "service": {
-    "command": ["node", "src/server.js"],
-    "environment": {
-      "PORT": "3000"
-    }
+    "command": ["node", "src/server.js"]
   }
 }
