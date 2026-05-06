@@ -25,34 +25,37 @@ Track metadata per requester, not just per item:
 
 ## Commands
 
-Use `node skills/shopping-list-chat/scripts/shopping-list.mjs ...`.
+Run commands from the target workspace root so `.shopping-list/shopping-lists.sqlite`
+resolves to that workspace's database.
+
+Use `node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs ...`.
 
 - Add an item:
-  `node skills/shopping-list-chat/scripts/shopping-list.mjs add-item "rice cakes" 5 supermercado`
+  `node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs add-item "rice cakes" 5 supermercado`
 - Add an item with requester and media at creation time:
-  `node skills/shopping-list-chat/scripts/shopping-list.mjs add-item "maternity pads" 2 supermercado --by "Quoted from 47790185013373" --media "/path/to/image.jpg"`
+  `node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs add-item "maternity pads" 2 supermercado --by "Quoted from 47790185013373" --media "/path/to/image.jpg"`
 - Add an item directly from a screenshot/photo/audio reference:
-  `node skills/shopping-list-chat/scripts/shopping-list.mjs add-item "Pregnacare Breastfeeding" 1 farmacia --media "/path/to/screenshot.jpg" --note "Holland & Barrett; €20.63"`
+  `node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs add-item "Pregnacare Breastfeeding" 1 farmacia --media "/path/to/screenshot.jpg" --note "Holland & Barrett; €20.63"`
 - Attach an image or note to one person's order after the fact:
-  `node skills/shopping-list-chat/scripts/shopping-list.mjs annotate-order "maternity pads" supermercado --by "Quoted from 47790185013373" --media "/path/to/image.jpg" --note "exact brand from photo"`
+  `node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs annotate-order "maternity pads" supermercado --by "Quoted from 47790185013373" --media "/path/to/image.jpg" --note "exact brand from photo"`
 - Reopen an item as pending without changing quantity:
-  `node skills/shopping-list-chat/scripts/shopping-list.mjs mark-pending "rice cakes" supermercado`
+  `node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs mark-pending "rice cakes" supermercado`
 - Remove an item:
-  `node skills/shopping-list-chat/scripts/shopping-list.mjs remove-item "coca cola" supermercado`
+  `node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs remove-item "coca cola" supermercado`
 - Mark an item as bought:
-  `node skills/shopping-list-chat/scripts/shopping-list.mjs mark-bought "maternity pads" supermercado`
+  `node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs mark-bought "maternity pads" supermercado`
 - Show one list:
-  `node skills/shopping-list-chat/scripts/shopping-list.mjs show-list supermercado`
+  `node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs show-list supermercado`
 - Show known lists:
-  `node skills/shopping-list-chat/scripts/shopping-list.mjs show-lists`
+  `node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs show-lists`
 - Initialize this workspace's local database:
-  `node skills/shopping-list-chat/scripts/shopping-list.mjs init`
+  `node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs init`
 - Add an item alias:
-  `node skills/shopping-list-chat/scripts/shopping-list.mjs add-alias coke "coca cola"`
+  `node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs add-alias coke "coca cola"`
 - Add a list alias:
-  `node skills/shopping-list-chat/scripts/shopping-list.mjs add-list-alias dunnes supermercado`
+  `node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs add-list-alias dunnes supermercado`
 - Show recent history:
-  `node skills/shopping-list-chat/scripts/shopping-list.mjs show-events 20`
+  `node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs show-events 20`
 
 ## Rules
 
@@ -85,7 +88,8 @@ Use `node skills/shopping-list-chat/scripts/shopping-list.mjs ...`.
 
 ## Current Architecture
 
-- `skills/shopping-list-chat/scripts/shopping-list.mjs` is the authoritative CLI for chat requests, per-person provenance, and media association.
+- `.agents/skills/shopping-list-chat/scripts/shopping-list.mjs` is the authoritative CLI in an installed workspace.
+- `skills/shopping-list-chat/scripts/shopping-list.mjs` is only the repo-internal source path.
 - `src/server.js` and `public/list.js` expose the grouped web view from `item_orders.status`.
 - If the request is about chat operations, prefer the skill script, not the simpler CLI.
 

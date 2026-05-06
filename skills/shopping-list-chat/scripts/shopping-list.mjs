@@ -1187,17 +1187,17 @@ function parseOptions(args) {
 
 function printUsage() {
   console.log(`Usage:
-  node skills/shopping-list-chat/scripts/shopping-list.mjs init
-  node skills/shopping-list-chat/scripts/shopping-list.mjs add-item <item> [qty] [list] [--by <name>] [--media <ref>] [--note <text>]
-  node skills/shopping-list-chat/scripts/shopping-list.mjs annotate-order <item> [list] [--by <name>] [--media <ref>] [--note <text>] [--clear-note]
-  node skills/shopping-list-chat/scripts/shopping-list.mjs mark-pending <item> [list]
-  node skills/shopping-list-chat/scripts/shopping-list.mjs remove-item <item> [list]
-  node skills/shopping-list-chat/scripts/shopping-list.mjs mark-bought <item> [list]
-  node skills/shopping-list-chat/scripts/shopping-list.mjs show-list [list] [status]
-  node skills/shopping-list-chat/scripts/shopping-list.mjs show-lists
-  node skills/shopping-list-chat/scripts/shopping-list.mjs show-events [limit]
-  node skills/shopping-list-chat/scripts/shopping-list.mjs add-alias <alias> <canonical-name>
-  node skills/shopping-list-chat/scripts/shopping-list.mjs add-list-alias <alias> <canonical-list-name>`);
+  node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs init
+  node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs add-item <item> [qty] [list] [--by <name>] [--media <ref>] [--note <text>]
+  node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs annotate-order <item> [list] [--by <name>] [--media <ref>] [--note <text>] [--clear-note]
+  node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs mark-pending <item> [list]
+  node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs remove-item <item> [list]
+  node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs mark-bought <item> [list]
+  node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs show-list [list] [status]
+  node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs show-lists
+  node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs show-events [limit]
+  node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs add-alias <alias> <canonical-name>
+  node .agents/skills/shopping-list-chat/scripts/shopping-list.mjs add-list-alias <alias> <canonical-list-name>`);
 }
 
 /**
