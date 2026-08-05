@@ -218,6 +218,8 @@ function resolveStaticAsset(pathname) {
       return { filePath: 'list.html', contentType: 'text/html; charset=utf-8' };
     case '/list.js':
       return { filePath: 'list.js', contentType: 'text/javascript; charset=utf-8' };
+    case '/product-search.js':
+      return { filePath: 'product-search.js', contentType: 'text/javascript; charset=utf-8' };
     case '/styles.css':
       return { filePath: 'styles.css', contentType: 'text/css; charset=utf-8' };
     default:

@@ -111,8 +111,14 @@ input {
   margin-bottom: 22px;
 }
 
+.autocomplete-field {
+  position: relative;
+  min-width: 0;
+}
+
 .add-bar input {
   min-width: 0;
+  width: 100%;
   padding: 12px 14px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 18px;
@@ -133,6 +139,56 @@ input {
 
 .add-bar #item-name {
   flex: 1;
+}
+
+.autocomplete-list {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  max-height: 260px;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  overflow-y: auto;
+  border: 1px solid rgba(240, 115, 74, 0.25);
+  border-radius: 16px;
+  background: #1a1a1d;
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.42);
+}
+
+.autocomplete-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.autocomplete-option[aria-selected="true"],
+.autocomplete-option:hover {
+  background: var(--accent-soft);
+}
+
+.autocomplete-option__name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.9rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.autocomplete-option__meta {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
 }
 
 .add-bar .qty-input {
@@ -197,6 +253,11 @@ input {
   color: var(--text);
 }
 
+.section-label--later .badge {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--accent);
+}
+
 #pending-items .item {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.03),
@@ -210,6 +271,19 @@ input {
 
 #pending-items .item-note-text {
   color: rgba(239, 239, 242, 0.78);
+}
+
+#later-section {
+  opacity: 0.82;
+}
+
+#later-items .item {
+  background: rgba(31, 31, 34, 0.72);
+}
+
+#later-items .item-name {
+  font-size: 0.98rem;
+  font-weight: 760;
 }
 
 #activity-section {
@@ -276,8 +350,9 @@ input {
   padding: 14px 16px;
 }
 
-.item-row--pending {
-  grid-template-columns: 46px minmax(0, 1fr) 54px;
+.item-row--pending,
+.item-row--later {
+  grid-template-columns: 46px minmax(0, 1fr) 46px 54px;
 }
 
 .item-row--activity {
@@ -363,6 +438,12 @@ input {
   color: var(--accent);
   font-size: 0.74rem;
   font-weight: 600;
+}
+
+.item-later-text {
+  color: var(--accent);
+  font-size: 0.74rem;
+  font-weight: 700;
 }
 
 .item-attachment {
@@ -722,12 +803,18 @@ input {
     padding: 12px 14px;
   }
 
-  .item-row--pending {
-    grid-template-columns: 44px minmax(0, 1fr) 52px;
+  .item-row--pending,
+  .item-row--later {
+    grid-template-columns: 42px minmax(0, 1fr) 42px 50px;
   }
 
   .item-row--activity {
     grid-template-columns: minmax(0, 1fr) 52px;
+  }
+
+  .icon-btn {
+    width: 42px;
+    height: 42px;
   }
 
   .edit-form {

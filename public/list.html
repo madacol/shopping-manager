@@ -26,7 +26,10 @@
       </div>
 
       <form id="add-form" class="add-bar">
-        <input id="item-name" name="item" type="text" autocomplete="off" placeholder="Agregar producto..." required>
+        <div class="autocomplete-field">
+          <input id="item-name" name="item" type="text" autocomplete="off" placeholder="Agregar producto..." required aria-autocomplete="list" aria-controls="product-suggestions" aria-expanded="false">
+          <ul id="product-suggestions" class="autocomplete-list" role="listbox" hidden></ul>
+        </div>
         <input id="item-qty" name="qty" type="number" inputmode="decimal" min="0.1" step="0.1" value="1" class="qty-input" required>
         <button type="submit" aria-label="Agregar">+</button>
       </form>
@@ -36,6 +39,13 @@
           Pendientes <span id="pending-count" class="badge">0</span>
         </p>
         <ul id="pending-items" class="item-list"></ul>
+      </div>
+
+      <div id="later-section" hidden>
+        <p class="section-label section-label--later section-toggle" data-target="later-items" aria-expanded="true">
+          Para después <span id="later-count" class="badge">0</span>
+        </p>
+        <ul id="later-items" class="item-list"></ul>
       </div>
 
       <div id="activity-section">
