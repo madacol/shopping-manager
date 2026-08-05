@@ -1,6 +1,0 @@
-{
-  "subdomain": "shopping-manager",
-  "service": {
-    "command": ["node", "src/server.js"]
-  }
-}
